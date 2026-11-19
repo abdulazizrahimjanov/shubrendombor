@@ -1,0 +1,1429 @@
+{
+  "entities": {
+    "ConnectionCheck": {
+      "title": "ConnectionCheck",
+      "description": "Server connectivity check document.",
+      "type": "object",
+      "properties": {
+        "ok": { "type": "boolean" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ok"]
+    },
+    "AdminRecord": {
+      "title": "AdminRecord",
+      "description": "Platform admin registry document.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "email": { "type": "string", "maxLength": 200 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "email", "createdAt"]
+    },
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Public non-PII user workspace pointer.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "displayName": { "type": "string", "maxLength": 120 },
+        "activeWorkspaceId": { "type": "string", "maxLength": 128 },
+        "workspaceIds": { "type": "array", "description": "Workspace IDs (max 20)" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "displayName", "activeWorkspaceId", "workspaceIds", "createdAt", "updatedAt"]
+    },
+    "UserPrivateInfo": {
+      "title": "UserPrivateInfo",
+      "description": "Private PII for authenticated user.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "email": { "type": "string", "maxLength": 200 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "email", "updatedAt"]
+    },
+    "Workspace": {
+      "title": "Workspace",
+      "description": "Shared multi-branch retail business workspace.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 120 },
+        "ownerUid": { "type": "string", "maxLength": 128 },
+        "ownerEmail": { "type": "string", "maxLength": 200 },
+        "memberUids": { "type": "array", "description": "Active Firebase Auth UIDs (max 50)" },
+        "adminUids": { "type": "array", "description": "Admin Firebase Auth UIDs (max 20)" },
+        "invitedEmails": { "type": "array", "description": "Invited Google emails (max 50)" },
+        "roles": { "type": "array", "description": "Workspace RBAC roles (max 20)" },
+        "settings": { "type": "object", "description": "Non-secret business configuration" },
+        "version": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "name",
+        "ownerUid",
+        "ownerEmail",
+        "memberUids",
+        "adminUids",
+        "invitedEmails",
+        "roles",
+        "settings",
+        "version",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "WorkspaceMember": {
+      "title": "WorkspaceMember",
+      "description": "Verified Firebase Auth user membership and RBAC role inside workspace.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128 },
+        "staffId": { "type": "string", "maxLength": 128 },
+        "displayName": { "type": "string", "maxLength": 120 },
+        "roleId": { "type": "string", "maxLength": 64 },
+        "assignedStoreIds": { "type": "array", "description": "Assigned branch IDs (max 20)" },
+        "permissions": { "type": "array", "description": "Effective permission strings (max 30)" },
+        "isActive": { "type": "boolean" },
+        "ownerUid": { "type": "string", "maxLength": 128 },
+        "memberUids": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "uid",
+        "staffId",
+        "displayName",
+        "roleId",
+        "assignedStoreIds",
+        "permissions",
+        "isActive",
+        "ownerUid",
+        "memberUids",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "PrivateSettings": {
+      "title": "PrivateSettings",
+      "description": "Admin-only integration secrets and API tokens.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "integrations": { "type": "object" },
+        "ownerUid": { "type": "string", "maxLength": 128 },
+        "adminUids": { "type": "array" },
+        "createdBy": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "integrations", "ownerUid", "adminUids", "createdBy", "createdAt", "updatedAt"]
+    },
+    "Store": {
+      "title": "Store",
+      "description": "Retail branch or store location.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 120 },
+        "address": { "type": "string", "maxLength": 300 },
+        "phone": { "type": "string", "maxLength": 40 },
+        "isActive": { "type": "boolean" },
+        "defaultWarehouseId": { "type": "string", "maxLength": 128 },
+        "storeCode": { "type": "string", "maxLength": 20 },
+        "color": { "type": "string", "maxLength": 20 },
+        "storeId": { "type": "string", "maxLength": 128 },
+        "ownerUid": { "type": "string", "maxLength": 128 },
+        "memberUids": { "type": "array" },
+        "createdBy": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "name",
+        "address",
+        "phone",
+        "isActive",
+        "defaultWarehouseId",
+        "storeId",
+        "ownerUid",
+        "memberUids",
+        "createdBy",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "Warehouse": {
+      "title": "Warehouse",
+      "description": "Stock storage warehouse.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 120 },
+        "address": { "type": "string", "maxLength": 300 },
+        "isMain": { "type": "boolean" },
+        "storeId": { "type": "string", "maxLength": 128 },
+        "ownerUid": { "type": "string", "maxLength": 128 },
+        "memberUids": { "type": "array" },
+        "createdBy": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "name",
+        "address",
+        "isMain",
+        "storeId",
+        "ownerUid",
+        "memberUids",
+        "createdBy",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "Category": {
+      "title": "Category",
+      "description": "Product and receipt category.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "nameUz": { "type": "string", "maxLength": 120 },
+        "nameRu": { "type": "string", "maxLength": 120 },
+        "parentId": { "type": "string", "maxLength": 128 },
+        "sortOrder": { "type": "number" },
+        "storeId": { "type": "string", "maxLength": 128 },
+        "ownerUid": { "type": "string", "maxLength": 128 },
+        "memberUids": { "type": "array" },
+        "createdBy": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "nameUz",
+        "nameRu",
+        "sortOrder",
+        "storeId",
+        "ownerUid",
+        "memberUids",
+        "createdBy",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "Brand": {
+      "title": "Brand",
+      "description": "Product brand.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 120 },
+        "country": { "type": "string", "maxLength": 80 },
+        "storeId": { "type": "string", "maxLength": 128 },
+        "ownerUid": { "type": "string", "maxLength": 128 },
+        "memberUids": { "type": "array" },
+        "createdBy": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "name", "storeId", "ownerUid", "memberUids", "createdBy", "createdAt", "updatedAt"]
+    },
+    "Product": {
+      "title": "Product",
+      "description": "Catalog product with size/color variants.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 200 },
+        "categoryId": { "type": "string", "maxLength": 128 },
+        "brandId": { "type": "string", "maxLength": 128 },
+        "collection": { "type": "string", "maxLength": 120 },
+        "unit": { "type": "string", "enum": ["dona", "juft", "kg", "litr", "quti", "metr"] },
+        "description": { "type": "string", "maxLength": 1000 },
+        "photoUrl": { "type": "string", "maxLength": 150000 },
+        "supplierId": { "type": "string", "maxLength": 128 },
+        "tags": { "type": "array" },
+        "isPublishedOnline": { "type": "boolean" },
+        "variants": { "type": "array" },
+        "storeId": { "type": "string", "maxLength": 128 },
+        "ownerUid": { "type": "string", "maxLength": 128 },
+        "memberUids": { "type": "array" },
+        "createdBy": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "name",
+        "categoryId",
+        "unit",
+        "tags",
+        "isPublishedOnline",
+        "variants",
+        "storeId",
+        "ownerUid",
+        "memberUids",
+        "createdBy",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "Supplier": {
+      "title": "Supplier",
+      "description": "Product supplier and payable balance.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 150 },
+        "contactName": { "type": "string", "maxLength": 120 },
+        "phone": { "type": "string", "maxLength": 40 },
+        "address": { "type": "string", "maxLength": 300 },
+        "notes": { "type": "string", "maxLength": 500 },
+        "debtBalance": { "type": "number" },
+        "storeId": { "type": "string", "maxLength": 128 },
+        "ownerUid": { "type": "string", "maxLength": 128 },
+        "memberUids": { "type": "array" },
+        "createdBy": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "name",
+        "contactName",
+        "phone",
+        "debtBalance",
+        "storeId",
+        "ownerUid",
+        "memberUids",
+        "createdBy",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "StockItem": {
+      "title": "StockItem",
+      "description": "Variant stock balance per warehouse.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "productId": { "type": "string", "maxLength": 128 },
+        "variantId": { "type": "string", "maxLength": 128 },
+        "warehouseId": { "type": "string", "maxLength": 128 },
+        "qty": { "type": "number" },
+        "storeId": { "type": "string", "maxLength": 128 },
+        "ownerUid": { "type": "string", "maxLength": 128 },
+        "memberUids": { "type": "array" },
+        "createdBy": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "productId",
+        "variantId",
+        "warehouseId",
+        "qty",
+        "storeId",
+        "ownerUid",
+        "memberUids",
+        "createdBy",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "StockMovement": {
+      "title": "StockMovement",
+      "description": "Stock movement audit entry.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "productId": { "type": "string", "maxLength": 128 },
+        "variantId": { "type": "string", "maxLength": 128 },
+        "warehouseId": { "type": "string", "maxLength": 128 },
+        "type": { "type": "string", "maxLength": 40 },
+        "qtyDelta": { "type": "number" },
+        "qtyAfter": { "type": "number" },
+        "unitCost": { "type": "number" },
+        "referenceId": { "type": "string", "maxLength": 128 },
+        "referenceType": { "type": "string", "maxLength": 64 },
+        "note": { "type": "string", "maxLength": 500 },
+        "storeId": { "type": "string", "maxLength": 128 },
+        "ownerUid": { "type": "string", "maxLength": 128 },
+        "memberUids": { "type": "array" },
+        "createdBy": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "productId",
+        "variantId",
+        "warehouseId",
+        "type",
+        "qtyDelta",
+        "qtyAfter",
+        "unitCost",
+        "storeId",
+        "ownerUid",
+        "memberUids",
+        "createdBy",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "PurchaseReceipt": {
+      "title": "PurchaseReceipt",
+      "description": "Stock receiving document.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "number": { "type": "string", "maxLength": 64 },
+        "supplierId": { "type": "string", "maxLength": 128 },
+        "warehouseId": { "type": "string", "maxLength": 128 },
+        "categoryId": { "type": "string", "maxLength": 128 },
+        "items": { "type": "array" },
+        "totalAmount": { "type": "number" },
+        "paidAmount": { "type": "number" },
+        "paymentStatus": { "type": "string", "enum": ["paid", "partial", "debt"] },
+        "note": { "type": "string", "maxLength": 500 },
+        "storeId": { "type": "string", "maxLength": 128 },
+        "ownerUid": { "type": "string", "maxLength": 128 },
+        "memberUids": { "type": "array" },
+        "createdBy": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "number",
+        "supplierId",
+        "warehouseId",
+        "items",
+        "totalAmount",
+        "paidAmount",
+        "paymentStatus",
+        "storeId",
+        "ownerUid",
+        "memberUids",
+        "createdBy",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "PurchaseOrder": {
+      "title": "PurchaseOrder",
+      "description": "Supplier purchase order.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "number": { "type": "string", "maxLength": 64 },
+        "supplierId": { "type": "string", "maxLength": 128 },
+        "warehouseId": { "type": "string", "maxLength": 128 },
+        "items": { "type": "array" },
+        "totalAmount": { "type": "number" },
+        "status": { "type": "string", "enum": ["draft", "ordered", "received", "canceled"] },
+        "expectedDate": { "type": "string", "maxLength": 64 },
+        "note": { "type": "string", "maxLength": 500 },
+        "storeId": { "type": "string", "maxLength": 128 },
+        "ownerUid": { "type": "string", "maxLength": 128 },
+        "memberUids": { "type": "array" },
+        "createdBy": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "number",
+        "supplierId",
+        "warehouseId",
+        "items",
+        "totalAmount",
+        "status",
+        "storeId",
+        "ownerUid",
+        "memberUids",
+        "createdBy",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "Transfer": {
+      "title": "Transfer",
+      "description": "Inter-warehouse stock transfer.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "number": { "type": "string", "maxLength": 64 },
+        "fromWarehouseId": { "type": "string", "maxLength": 128 },
+        "toWarehouseId": { "type": "string", "maxLength": 128 },
+        "items": { "type": "array" },
+        "status": { "type": "string", "enum": ["sent", "received", "discrepancy"] },
+        "note": { "type": "string", "maxLength": 500 },
+        "storeId": { "type": "string", "maxLength": 128 },
+        "ownerUid": { "type": "string", "maxLength": 128 },
+        "memberUids": { "type": "array" },
+        "createdBy": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "number",
+        "fromWarehouseId",
+        "toWarehouseId",
+        "items",
+        "status",
+        "storeId",
+        "ownerUid",
+        "memberUids",
+        "createdBy",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "WriteOff": {
+      "title": "WriteOff",
+      "description": "Inventory write-off record.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "number": { "type": "string", "maxLength": 64 },
+        "warehouseId": { "type": "string", "maxLength": 128 },
+        "reason": { "type": "string", "enum": ["damaged", "expired", "lost", "other"] },
+        "items": { "type": "array" },
+        "totalCost": { "type": "number" },
+        "note": { "type": "string", "maxLength": 500 },
+        "storeId": { "type": "string", "maxLength": 128 },
+        "ownerUid": { "type": "string", "maxLength": 128 },
+        "memberUids": { "type": "array" },
+        "createdBy": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "number",
+        "warehouseId",
+        "reason",
+        "items",
+        "totalCost",
+        "storeId",
+        "ownerUid",
+        "memberUids",
+        "createdBy",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "Stocktake": {
+      "title": "Stocktake",
+      "description": "Warehouse inventory count.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "number": { "type": "string", "maxLength": 64 },
+        "warehouseId": { "type": "string", "maxLength": 128 },
+        "status": { "type": "string", "enum": ["in_progress", "completed"] },
+        "items": { "type": "array" },
+        "totalDiscrepancyValue": { "type": "number" },
+        "note": { "type": "string", "maxLength": 500 },
+        "storeId": { "type": "string", "maxLength": 128 },
+        "ownerUid": { "type": "string", "maxLength": 128 },
+        "memberUids": { "type": "array" },
+        "createdBy": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "number",
+        "warehouseId",
+        "status",
+        "items",
+        "totalDiscrepancyValue",
+        "storeId",
+        "ownerUid",
+        "memberUids",
+        "createdBy",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "Sale": {
+      "title": "Sale",
+      "description": "POS sale or deferred receipt.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "receiptNumber": { "type": "string", "maxLength": 64 },
+        "warehouseId": { "type": "string", "maxLength": 128 },
+        "shiftId": { "type": "string", "maxLength": 128 },
+        "cashierId": { "type": "string", "maxLength": 128 },
+        "cashierName": { "type": "string", "maxLength": 120 },
+        "customerId": { "type": "string", "maxLength": 128 },
+        "customerName": { "type": "string", "maxLength": 120 },
+        "items": { "type": "array" },
+        "subtotal": { "type": "number" },
+        "checkDiscountAmount": { "type": "number" },
+        "checkDiscountPercent": { "type": "number" },
+        "loyaltyPointsSpent": { "type": "number" },
+        "loyaltyPointsEarned": { "type": "number" },
+        "promoCode": { "type": "string", "maxLength": 64 },
+        "vatAmount": { "type": "number" },
+        "totalAmount": { "type": "number" },
+        "costTotal": { "type": "number" },
+        "payments": { "type": "array" },
+        "paidAmount": { "type": "number" },
+        "debtAmount": { "type": "number" },
+        "cashGiven": { "type": "number" },
+        "changeAmount": { "type": "number" },
+        "paidAt": { "type": "string", "maxLength": 64 },
+        "status": { "type": "string", "enum": ["deferred", "completed", "returned", "partial_return"] },
+        "offlineCreated": { "type": "boolean" },
+        "syncedAt": { "type": "string", "maxLength": 64 },
+        "fiscalStatus": { "type": "string", "enum": ["not_configured", "pending", "fiscalized"] },
+        "fiscalReceiptId": { "type": "string", "maxLength": 128 },
+        "note": { "type": "string", "maxLength": 500 },
+        "storeId": { "type": "string", "maxLength": 128 },
+        "ownerUid": { "type": "string", "maxLength": 128 },
+        "memberUids": { "type": "array" },
+        "createdBy": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "receiptNumber",
+        "warehouseId",
+        "cashierId",
+        "cashierName",
+        "items",
+        "subtotal",
+        "checkDiscountAmount",
+        "checkDiscountPercent",
+        "loyaltyPointsSpent",
+        "loyaltyPointsEarned",
+        "vatAmount",
+        "totalAmount",
+        "costTotal",
+        "payments",
+        "paidAmount",
+        "debtAmount",
+        "status",
+        "fiscalStatus",
+        "storeId",
+        "ownerUid",
+        "memberUids",
+        "createdBy",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "ReturnDoc": {
+      "title": "ReturnDoc",
+      "description": "POS sale return or exchange.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "number": { "type": "string", "maxLength": 64 },
+        "saleId": { "type": "string", "maxLength": 128 },
+        "receiptNumber": { "type": "string", "maxLength": 64 },
+        "warehouseId": { "type": "string", "maxLength": 128 },
+        "items": { "type": "array" },
+        "totalRefund": { "type": "number" },
+        "refundMethod": { "type": "string", "maxLength": 32 },
+        "reason": { "type": "string", "maxLength": 300 },
+        "isExchange": { "type": "boolean" },
+        "storeId": { "type": "string", "maxLength": 128 },
+        "ownerUid": { "type": "string", "maxLength": 128 },
+        "memberUids": { "type": "array" },
+        "createdBy": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "number",
+        "saleId",
+        "receiptNumber",
+        "warehouseId",
+        "items",
+        "totalRefund",
+        "refundMethod",
+        "reason",
+        "storeId",
+        "ownerUid",
+        "memberUids",
+        "createdBy",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "CashShift": {
+      "title": "CashShift",
+      "description": "POS cashier shift summary.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "number": { "type": "string", "maxLength": 64 },
+        "cashierId": { "type": "string", "maxLength": 128 },
+        "cashierName": { "type": "string", "maxLength": 120 },
+        "openedAt": { "type": "string", "maxLength": 64 },
+        "closedAt": { "type": "string", "maxLength": 64 },
+        "startingCash": { "type": "number" },
+        "cashSalesTotal": { "type": "number" },
+        "cardSalesTotal": { "type": "number" },
+        "otherSalesTotal": { "type": "number" },
+        "cashRefundsTotal": { "type": "number" },
+        "cashInTotal": { "type": "number" },
+        "cashOutTotal": { "type": "number" },
+        "expectedCash": { "type": "number" },
+        "actualCash": { "type": "number" },
+        "discrepancy": { "type": "number" },
+        "status": { "type": "string", "enum": ["open", "closed"] },
+        "notes": { "type": "string", "maxLength": 500 },
+        "storeId": { "type": "string", "maxLength": 128 },
+        "ownerUid": { "type": "string", "maxLength": 128 },
+        "memberUids": { "type": "array" },
+        "createdBy": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "number",
+        "cashierId",
+        "cashierName",
+        "openedAt",
+        "startingCash",
+        "cashSalesTotal",
+        "cardSalesTotal",
+        "otherSalesTotal",
+        "cashRefundsTotal",
+        "cashInTotal",
+        "cashOutTotal",
+        "expectedCash",
+        "status",
+        "storeId",
+        "ownerUid",
+        "memberUids",
+        "createdBy",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "CashOperation": {
+      "title": "CashOperation",
+      "description": "Cash drawer in/out operation.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "shiftId": { "type": "string", "maxLength": 128 },
+        "type": { "type": "string", "enum": ["in", "out"] },
+        "amount": { "type": "number" },
+        "reason": { "type": "string", "maxLength": 300 },
+        "storeId": { "type": "string", "maxLength": 128 },
+        "ownerUid": { "type": "string", "maxLength": 128 },
+        "memberUids": { "type": "array" },
+        "createdBy": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "shiftId",
+        "type",
+        "amount",
+        "reason",
+        "storeId",
+        "ownerUid",
+        "memberUids",
+        "createdBy",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "Account": {
+      "title": "Account",
+      "description": "Cash or bank financial account.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 120 },
+        "type": { "type": "string", "enum": ["cash", "card_terminal", "bank"] },
+        "balance": { "type": "number" },
+        "isDefault": { "type": "boolean" },
+        "storeId": { "type": "string", "maxLength": 128 },
+        "ownerUid": { "type": "string", "maxLength": 128 },
+        "memberUids": { "type": "array" },
+        "createdBy": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "name",
+        "type",
+        "balance",
+        "storeId",
+        "ownerUid",
+        "memberUids",
+        "createdBy",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "FinanceTransaction": {
+      "title": "FinanceTransaction",
+      "description": "Account income, expense, or transfer entry.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "accountId": { "type": "string", "maxLength": 128 },
+        "toAccountId": { "type": "string", "maxLength": 128 },
+        "type": { "type": "string", "enum": ["income", "expense", "transfer"] },
+        "category": { "type": "string", "maxLength": 80 },
+        "amount": { "type": "number" },
+        "description": { "type": "string", "maxLength": 300 },
+        "referenceId": { "type": "string", "maxLength": 128 },
+        "storeId": { "type": "string", "maxLength": 128 },
+        "ownerUid": { "type": "string", "maxLength": 128 },
+        "memberUids": { "type": "array" },
+        "createdBy": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "accountId",
+        "type",
+        "category",
+        "amount",
+        "description",
+        "storeId",
+        "ownerUid",
+        "memberUids",
+        "createdBy",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "Expense": {
+      "title": "Expense",
+      "description": "Operating expense record.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "accountId": { "type": "string", "maxLength": 128 },
+        "category": { "type": "string", "enum": ["rent", "salary", "utilities", "delivery", "marketing", "taxes", "other"] },
+        "amount": { "type": "number" },
+        "description": { "type": "string", "maxLength": 300 },
+        "isRecurring": { "type": "boolean" },
+        "recurringDay": { "type": "number" },
+        "date": { "type": "string", "maxLength": 64 },
+        "storeId": { "type": "string", "maxLength": 128 },
+        "ownerUid": { "type": "string", "maxLength": 128 },
+        "memberUids": { "type": "array" },
+        "createdBy": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "accountId",
+        "category",
+        "amount",
+        "description",
+        "isRecurring",
+        "date",
+        "storeId",
+        "ownerUid",
+        "memberUids",
+        "createdBy",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "Customer": {
+      "title": "Customer",
+      "description": "CRM customer profile.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 120 },
+        "phone": { "type": "string", "maxLength": 40 },
+        "birthday": { "type": "string", "maxLength": 32 },
+        "gender": { "type": "string", "enum": ["male", "female"] },
+        "notes": { "type": "string", "maxLength": 500 },
+        "tags": { "type": "array" },
+        "segment": { "type": "string", "enum": ["new", "regular", "vip", "sleeping"] },
+        "totalSpent": { "type": "number" },
+        "ordersCount": { "type": "number" },
+        "lastPurchaseAt": { "type": "string", "maxLength": 64 },
+        "debtBalance": { "type": "number" },
+        "storeId": { "type": "string", "maxLength": 128 },
+        "ownerUid": { "type": "string", "maxLength": 128 },
+        "memberUids": { "type": "array" },
+        "createdBy": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "name",
+        "phone",
+        "tags",
+        "segment",
+        "totalSpent",
+        "ordersCount",
+        "debtBalance",
+        "storeId",
+        "ownerUid",
+        "memberUids",
+        "createdBy",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "LoyaltyAccount": {
+      "title": "LoyaltyAccount",
+      "description": "Customer cashback loyalty balance.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "customerId": { "type": "string", "maxLength": 128 },
+        "tier": { "type": "string", "enum": ["bronze", "silver", "gold", "platinum"] },
+        "cashbackPercent": { "type": "number" },
+        "pointsBalance": { "type": "number" },
+        "cardNumber": { "type": "string", "maxLength": 64 },
+        "expiresAt": { "type": "string", "maxLength": 64 },
+        "storeId": { "type": "string", "maxLength": 128 },
+        "ownerUid": { "type": "string", "maxLength": 128 },
+        "memberUids": { "type": "array" },
+        "createdBy": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "customerId",
+        "tier",
+        "cashbackPercent",
+        "pointsBalance",
+        "cardNumber",
+        "storeId",
+        "ownerUid",
+        "memberUids",
+        "createdBy",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "LoyaltyTransaction": {
+      "title": "LoyaltyTransaction",
+      "description": "Customer loyalty earn/spend transaction.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "customerId": { "type": "string", "maxLength": 128 },
+        "loyaltyAccountId": { "type": "string", "maxLength": 128 },
+        "type": { "type": "string", "enum": ["earn", "spend", "expire", "birthday_bonus"] },
+        "points": { "type": "number" },
+        "saleId": { "type": "string", "maxLength": 128 },
+        "expiresAt": { "type": "string", "maxLength": 64 },
+        "note": { "type": "string", "maxLength": 300 },
+        "storeId": { "type": "string", "maxLength": 128 },
+        "ownerUid": { "type": "string", "maxLength": 128 },
+        "memberUids": { "type": "array" },
+        "createdBy": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "customerId",
+        "loyaltyAccountId",
+        "type",
+        "points",
+        "storeId",
+        "ownerUid",
+        "memberUids",
+        "createdBy",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "Debt": {
+      "title": "Debt",
+      "description": "Customer receivable / Nasiya record.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "customerId": { "type": "string", "maxLength": 128 },
+        "customerName": { "type": "string", "maxLength": 120 },
+        "saleId": { "type": "string", "maxLength": 128 },
+        "originalAmount": { "type": "number" },
+        "remainingAmount": { "type": "number" },
+        "dueDate": { "type": "string", "maxLength": 64 },
+        "status": { "type": "string", "enum": ["open", "partial", "paid"] },
+        "payments": { "type": "array" },
+        "storeId": { "type": "string", "maxLength": 128 },
+        "ownerUid": { "type": "string", "maxLength": 128 },
+        "memberUids": { "type": "array" },
+        "createdBy": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "customerId",
+        "customerName",
+        "originalAmount",
+        "remainingAmount",
+        "status",
+        "payments",
+        "storeId",
+        "ownerUid",
+        "memberUids",
+        "createdBy",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "PromoCode": {
+      "title": "PromoCode",
+      "description": "Discount promo code.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "code": { "type": "string", "maxLength": 64 },
+        "discountType": { "type": "string", "enum": ["percent", "fixed"] },
+        "discountValue": { "type": "number" },
+        "minOrderAmount": { "type": "number" },
+        "maxUses": { "type": "number" },
+        "usedCount": { "type": "number" },
+        "expiresAt": { "type": "string", "maxLength": 64 },
+        "isActive": { "type": "boolean" },
+        "storeId": { "type": "string", "maxLength": 128 },
+        "ownerUid": { "type": "string", "maxLength": 128 },
+        "memberUids": { "type": "array" },
+        "createdBy": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "code",
+        "discountType",
+        "discountValue",
+        "minOrderAmount",
+        "maxUses",
+        "usedCount",
+        "isActive",
+        "storeId",
+        "ownerUid",
+        "memberUids",
+        "createdBy",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "StaffDirectoryEntry": {
+      "title": "StaffDirectoryEntry",
+      "description": "Non-PII operational staff profile visible to workspace members.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 120 },
+        "roleId": { "type": "string", "maxLength": 64 },
+        "assignedStoreIds": { "type": "array" },
+        "customPermissions": { "type": "array" },
+        "isActive": { "type": "boolean" },
+        "avatarColor": { "type": "string", "maxLength": 20 },
+        "schedule": { "type": "string", "maxLength": 120 },
+        "storeId": { "type": "string", "maxLength": 128 },
+        "ownerUid": { "type": "string", "maxLength": 128 },
+        "memberUids": { "type": "array" },
+        "createdBy": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "userId",
+        "name",
+        "roleId",
+        "assignedStoreIds",
+        "isActive",
+        "schedule",
+        "storeId",
+        "ownerUid",
+        "memberUids",
+        "createdBy",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "StaffCredential": {
+      "title": "StaffCredential",
+      "description": "Isolated PII, hashed credentials, and payroll data for employees (admin-only).",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "phone": { "type": "string", "maxLength": 40 },
+        "password": { "type": "string", "maxLength": 120, "description": "Legacy plaintext field (forbidden on new writes)" },
+        "pin": { "type": "string", "maxLength": 10, "description": "Legacy plaintext field (forbidden on new writes)" },
+        "passwordHash": { "type": "string", "maxLength": 256 },
+        "pinHash": { "type": "string", "maxLength": 256 },
+        "hashAlgo": { "type": "string", "enum": ["sha256", "pbkdf2-sha256", "firebase-auth"] },
+        "authMigrated": { "type": "boolean" },
+        "googleEmail": { "type": "string", "maxLength": 200 },
+        "baseSalary": { "type": "number" },
+        "commissionPercent": { "type": "number" },
+        "hiredAt": { "type": "string", "maxLength": 64 },
+        "storeId": { "type": "string", "maxLength": 128 },
+        "ownerUid": { "type": "string", "maxLength": 128 },
+        "adminUids": { "type": "array" },
+        "createdBy": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "userId",
+        "phone",
+        "baseSalary",
+        "commissionPercent",
+        "hiredAt",
+        "storeId",
+        "ownerUid",
+        "adminUids",
+        "createdBy",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "StaffInvite": {
+      "title": "StaffInvite",
+      "description": "Zero-PII SHA-256 email hash invite binding for RBAC role, assigned stores, and permissions.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "staffId": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "roleId": { "type": "string", "maxLength": 64 },
+        "assignedStoreIds": { "type": "array" },
+        "permissions": { "type": "array" },
+        "ownerUid": { "type": "string", "maxLength": 128 },
+        "adminUids": { "type": "array" },
+        "createdBy": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "staffId",
+        "userId",
+        "roleId",
+        "assignedStoreIds",
+        "permissions",
+        "ownerUid",
+        "adminUids",
+        "createdBy",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "Target": {
+      "title": "Target",
+      "description": "Monthly sales target.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "employeeId": { "type": "string", "maxLength": 128 },
+        "month": { "type": "string", "maxLength": 16 },
+        "targetAmount": { "type": "number" },
+        "storeId": { "type": "string", "maxLength": 128 },
+        "ownerUid": { "type": "string", "maxLength": 128 },
+        "memberUids": { "type": "array" },
+        "createdBy": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "month",
+        "targetAmount",
+        "storeId",
+        "ownerUid",
+        "memberUids",
+        "createdBy",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "OnlineOrder": {
+      "title": "OnlineOrder",
+      "description": "Online storefront order.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "orderNumber": { "type": "string", "maxLength": 64 },
+        "customerName": { "type": "string", "maxLength": 120 },
+        "customerPhone": { "type": "string", "maxLength": 40 },
+        "deliveryAddress": { "type": "string", "maxLength": 300 },
+        "deliveryMethod": { "type": "string", "enum": ["delivery", "pickup"] },
+        "paymentMethod": { "type": "string", "enum": ["cash_on_delivery", "online_placeholder"] },
+        "items": { "type": "array" },
+        "totalAmount": { "type": "number" },
+        "status": { "type": "string", "enum": ["new", "confirmed", "delivered", "canceled"] },
+        "note": { "type": "string", "maxLength": 500 },
+        "storeId": { "type": "string", "maxLength": 128 },
+        "ownerUid": { "type": "string", "maxLength": 128 },
+        "memberUids": { "type": "array" },
+        "createdBy": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "orderNumber",
+        "customerName",
+        "customerPhone",
+        "deliveryAddress",
+        "deliveryMethod",
+        "paymentMethod",
+        "items",
+        "totalAmount",
+        "status",
+        "storeId",
+        "ownerUid",
+        "memberUids",
+        "createdBy",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "Audit log entry for staff operations.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "userName": { "type": "string", "maxLength": 120 },
+        "action": { "type": "string", "maxLength": 80 },
+        "entityType": { "type": "string", "maxLength": 64 },
+        "entityId": { "type": "string", "maxLength": 128 },
+        "details": { "type": "string", "maxLength": 500 },
+        "storeId": { "type": "string", "maxLength": 128 },
+        "ownerUid": { "type": "string", "maxLength": 128 },
+        "memberUids": { "type": "array" },
+        "createdBy": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "userId",
+        "userName",
+        "action",
+        "entityType",
+        "entityId",
+        "details",
+        "storeId",
+        "ownerUid",
+        "memberUids",
+        "createdBy",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "SyncedOp": {
+      "title": "SyncedOp",
+      "description": "Idempotency marker for offline queue replay.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "opType": { "type": "string", "maxLength": 80 },
+        "actorUid": { "type": "string", "maxLength": 128 },
+        "storeId": { "type": "string", "maxLength": 128 },
+        "ownerUid": { "type": "string", "maxLength": 128 },
+        "memberUids": { "type": "array" },
+        "createdBy": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "opType", "actorUid", "storeId", "ownerUid", "memberUids", "createdBy", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/test/{docId}": {
+      "schema": { "$ref": "#/entities/ConnectionCheck" },
+      "description": "Server connection verification document."
+    },
+    "/admins/{userId}": {
+      "schema": { "$ref": "#/entities/AdminRecord" },
+      "description": "Platform admin lookup records."
+    },
+    "/userProfiles/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Non-PII workspace pointer per authenticated Firebase user."
+    },
+    "/userProfiles/{userId}/private/{docId}": {
+      "schema": { "$ref": "#/entities/UserPrivateInfo" },
+      "description": "Isolated PII (email) for authenticated user."
+    },
+    "/workspaces/{workspaceId}": {
+      "schema": { "$ref": "#/entities/Workspace" },
+      "description": "Business workspace root containing RBAC membership, roles, and public settings."
+    },
+    "/workspaces/{workspaceId}/members/{memberUid}": {
+      "schema": { "$ref": "#/entities/WorkspaceMember" },
+      "description": "Firebase Auth UID membership and branch/role permissions."
+    },
+    "/workspaces/{workspaceId}/privateSettings/{docId}": {
+      "schema": { "$ref": "#/entities/PrivateSettings" },
+      "description": "Admin-only API keys and webhook integration secrets."
+    },
+    "/workspaces/{workspaceId}/stores/{storeId}": {
+      "schema": { "$ref": "#/entities/Store" },
+      "description": "Retail branches."
+    },
+    "/workspaces/{workspaceId}/warehouses/{warehouseId}": {
+      "schema": { "$ref": "#/entities/Warehouse" },
+      "description": "Warehouses."
+    },
+    "/workspaces/{workspaceId}/categories/{categoryId}": {
+      "schema": { "$ref": "#/entities/Category" },
+      "description": "Shared categories."
+    },
+    "/workspaces/{workspaceId}/brands/{brandId}": {
+      "schema": { "$ref": "#/entities/Brand" },
+      "description": "Product brands."
+    },
+    "/workspaces/{workspaceId}/products/{productId}": {
+      "schema": { "$ref": "#/entities/Product" },
+      "description": "Shared catalog products and variants."
+    },
+    "/workspaces/{workspaceId}/suppliers/{supplierId}": {
+      "schema": { "$ref": "#/entities/Supplier" },
+      "description": "Suppliers and balances."
+    },
+    "/workspaces/{workspaceId}/stockItems/{stockItemId}": {
+      "schema": { "$ref": "#/entities/StockItem" },
+      "description": "Atomic warehouse variant stock balances."
+    },
+    "/workspaces/{workspaceId}/stockMovements/{movementId}": {
+      "schema": { "$ref": "#/entities/StockMovement" },
+      "description": "Stock movement history."
+    },
+    "/workspaces/{workspaceId}/purchaseReceipts/{receiptId}": {
+      "schema": { "$ref": "#/entities/PurchaseReceipt" },
+      "description": "Purchase receiving documents."
+    },
+    "/workspaces/{workspaceId}/purchaseOrders/{poId}": {
+      "schema": { "$ref": "#/entities/PurchaseOrder" },
+      "description": "Purchase orders."
+    },
+    "/workspaces/{workspaceId}/transfers/{transferId}": {
+      "schema": { "$ref": "#/entities/Transfer" },
+      "description": "Warehouse transfers."
+    },
+    "/workspaces/{workspaceId}/writeOffs/{writeOffId}": {
+      "schema": { "$ref": "#/entities/WriteOff" },
+      "description": "Stock write-offs."
+    },
+    "/workspaces/{workspaceId}/stocktakes/{stocktakeId}": {
+      "schema": { "$ref": "#/entities/Stocktake" },
+      "description": "Inventory stocktakes."
+    },
+    "/workspaces/{workspaceId}/sales/{saleId}": {
+      "schema": { "$ref": "#/entities/Sale" },
+      "description": "POS sales and deferred checks."
+    },
+    "/workspaces/{workspaceId}/returns/{returnId}": {
+      "schema": { "$ref": "#/entities/ReturnDoc" },
+      "description": "Sale returns and exchanges."
+    },
+    "/workspaces/{workspaceId}/cashShifts/{shiftId}": {
+      "schema": { "$ref": "#/entities/CashShift" },
+      "description": "Cash register shifts."
+    },
+    "/workspaces/{workspaceId}/cashOperations/{opId}": {
+      "schema": { "$ref": "#/entities/CashOperation" },
+      "description": "Cash register operations."
+    },
+    "/workspaces/{workspaceId}/accounts/{accountId}": {
+      "schema": { "$ref": "#/entities/Account" },
+      "description": "Financial accounts."
+    },
+    "/workspaces/{workspaceId}/transactions/{trxId}": {
+      "schema": { "$ref": "#/entities/FinanceTransaction" },
+      "description": "Financial ledger entries."
+    },
+    "/workspaces/{workspaceId}/expenses/{expId}": {
+      "schema": { "$ref": "#/entities/Expense" },
+      "description": "Operating expenses."
+    },
+    "/workspaces/{workspaceId}/customers/{customerId}": {
+      "schema": { "$ref": "#/entities/Customer" },
+      "description": "Customer profiles."
+    },
+    "/workspaces/{workspaceId}/loyaltyAccounts/{loyId}": {
+      "schema": { "$ref": "#/entities/LoyaltyAccount" },
+      "description": "Customer cashback accounts."
+    },
+    "/workspaces/{workspaceId}/loyaltyTransactions/{ltxId}": {
+      "schema": { "$ref": "#/entities/LoyaltyTransaction" },
+      "description": "Loyalty point transactions."
+    },
+    "/workspaces/{workspaceId}/debts/{debtId}": {
+      "schema": { "$ref": "#/entities/Debt" },
+      "description": "Customer Nasiya debts."
+    },
+    "/workspaces/{workspaceId}/promoCodes/{promoId}": {
+      "schema": { "$ref": "#/entities/PromoCode" },
+      "description": "Promotional discount codes."
+    },
+    "/workspaces/{workspaceId}/staffDirectory/{staffId}": {
+      "schema": { "$ref": "#/entities/StaffDirectoryEntry" },
+      "description": "Non-PII staff operational directory."
+    },
+    "/workspaces/{workspaceId}/staffCredentials/{staffId}": {
+      "schema": { "$ref": "#/entities/StaffCredential" },
+      "description": "Admin-isolated staff phone, PIN, password, email, and salary details."
+    },
+    "/workspaces/{workspaceId}/staffInvites/{inviteId}": {
+      "schema": { "$ref": "#/entities/StaffInvite" },
+      "description": "Zero-PII SHA-256 email hash invite bindings for RBAC seat claiming."
+    },
+    "/workspaces/{workspaceId}/targets/{targetId}": {
+      "schema": { "$ref": "#/entities/Target" },
+      "description": "Employee monthly targets."
+    },
+    "/workspaces/{workspaceId}/onlineOrders/{orderId}": {
+      "schema": { "$ref": "#/entities/OnlineOrder" },
+      "description": "Storefront online orders."
+    },
+    "/workspaces/{workspaceId}/auditLogs/{auditId}": {
+      "schema": { "$ref": "#/entities/AuditLog" },
+      "description": "Audit log records."
+    },
+    "/workspaces/{workspaceId}/syncedOps/{opId}": {
+      "schema": { "$ref": "#/entities/SyncedOp" },
+      "description": "Offline queue idempotency markers."
+    }
+  }
+}

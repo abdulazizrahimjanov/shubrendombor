@@ -1,0 +1,67 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+@layer base {
+  :root {
+    --font-display: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+    --font-sans: 'Manrope', system-ui, -apple-system, sans-serif;
+    --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+  }
+
+  html,
+  body {
+    font-family: var(--font-sans);
+    touch-action: pan-x pan-y;
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+    overscroll-behavior-y: contain;
+  }
+
+  *,
+  *::before,
+  *::after {
+    touch-action: pan-x pan-y;
+  }
+
+  h1, h2, h3, h4, .font-display {
+    font-family: var(--font-display);
+  }
+
+  .font-mono {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/* Prevent iOS Safari / mobile WebView auto-zoom when focusing form fields smaller than 16px */
+@media (max-width: 767px), (hover: none) and (pointer: coarse) {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):not(.text-base):not(.text-lg):not(.text-xl):not(.text-2xl):not(.text-3xl),
+  select:not(.text-base):not(.text-lg):not(.text-xl):not(.text-2xl):not(.text-3xl),
+  textarea:not(.text-base):not(.text-lg):not(.text-xl):not(.text-2xl):not(.text-3xl) {
+    font-size: 16px;
+  }
+}
+
+/* Tabular numbers for all metrics and monetary figures */
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Safe bottom padding on iOS standalone */
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+/* Print utilities for thermal receipts (58mm/80mm), labels, and A4 reports */
+@media print {
+  body {
+    background: #ffffff !important;
+    color: #000000 !important;
+  }
+  .no-print {
+    display: none !important;
+  }
+  .print-only {
+    display: block !important;
+  }
+}

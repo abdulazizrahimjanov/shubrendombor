@@ -1,0 +1,6 @@
+{
+  "name": "SHU BREND OMBOR",
+  "description": "O'zbekiston chakana savdo do'konlari uchun POS kassa, ombor hisobi, CRM, moliya va onlayn katalog PWA tizimi.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

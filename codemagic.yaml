@@ -1,0 +1,207 @@
+workflows:
+  ios-unsigned:
+    name: Brend Ombor iOS (Unsigned Verification Build)
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    environment:
+      node: 22
+      xcode: latest
+      cocoapods: default
+      vars:
+        XCODE_PROJECT: "ios/App/App.xcodeproj"
+        XCODE_WORKSPACE: "ios/App/App.xcworkspace"
+        XCODE_SCHEME: "App"
+        BUNDLE_ID: "com.brendombor.app"
+    scripts:
+      - name: Install npm dependencies
+        script: |
+          echo "=== Brend Ombor iOS Build: $(node -p 'process.platform + "-" + process.arch + " " + process.version'), npm $(npm --version) ==="
+          unset npm_config_omit NPM_CONFIG_OMIT
+          npm ci --include=optional --no-audit --no-fund || npm install --include=optional --no-audit --no-fund
+          verify_native() {
+            node -e "
+              Promise.all([
+                import('rolldown'),
+                import('lightningcss'),
+                import('@tailwindcss/oxide'),
+                import('esbuild')
+              ]).then(() => {
+                console.log('All native build bindings loaded successfully!');
+              }).catch((err) => {
+                console.error('Native binding check failed:', err.message);
+                process.exit(1);
+              });
+            "
+          }
+          if ! verify_native; then
+            echo "Native bindings missing; clearing node_modules and package-lock.json and reinstalling..."
+            rm -rf node_modules package-lock.json
+            npm install --include=optional --no-audit --no-fund
+          fi
+          if ! verify_native && [ "$(uname -s)" = "Darwin" ]; then
+            echo "Force-installing darwin-$(node -p process.arch) native bindings..."
+            ARCH=$(node -p "process.arch")
+            ROLLDOWN_VER=$(node -p "require('./node_modules/rolldown/package.json').version")
+            OXIDE_VER=$(node -p "require('./node_modules/@tailwindcss/oxide/package.json').version")
+            LIGHTNING_VER=$(node -p "require('./node_modules/lightningcss/package.json').version")
+            ESBUILD_VER=$(node -p "require('./node_modules/esbuild/package.json').version")
+            npm install --no-save --include=optional --no-audit --no-fund \
+              "@rolldown/binding-darwin-${ARCH}@${ROLLDOWN_VER}" \
+              "@tailwindcss/oxide-darwin-${ARCH}@${OXIDE_VER}" \
+              "lightningcss-darwin-${ARCH}@${LIGHTNING_VER}" \
+              "@esbuild/darwin-${ARCH}@${ESBUILD_VER}"
+            verify_native
+          fi
+      - name: Build React + Vite web bundle
+        script: |
+          npm run build
+      - name: Sync Capacitor iOS
+        script: |
+          npx cap sync ios
+      - name: Install CocoaPods dependencies (if Podfile exists)
+        script: |
+          if [ -f "ios/App/Podfile" ]; then
+            cd ios/App && pod install --repo-update && cd ../..
+          else
+            echo "Using Swift Package Manager (CapApp-SPM)"
+          fi
+      - name: Build unsigned iOS app & package unsigned IPA
+        script: |
+          rm -rf build/ios
+          mkdir -p build/ios/Payload
+          if [ -d "$XCODE_WORKSPACE" ]; then
+            xcodebuild build \
+              -workspace "$XCODE_WORKSPACE" \
+              -scheme "$XCODE_SCHEME" \
+              -configuration Release \
+              -sdk iphoneos \
+              -derivedDataPath build/ios/DerivedData \
+              CODE_SIGNING_ALLOWED=NO \
+              CODE_SIGNING_REQUIRED=NO \
+              CODE_SIGN_IDENTITY="" \
+              DEVELOPMENT_TEAM=""
+          else
+            xcodebuild -resolvePackageDependencies -project "$XCODE_PROJECT" -scheme "$XCODE_SCHEME"
+            xcodebuild build \
+              -project "$XCODE_PROJECT" \
+              -scheme "$XCODE_SCHEME" \
+              -configuration Release \
+              -sdk iphoneos \
+              -derivedDataPath build/ios/DerivedData \
+              CODE_SIGNING_ALLOWED=NO \
+              CODE_SIGNING_REQUIRED=NO \
+              CODE_SIGN_IDENTITY="" \
+              DEVELOPMENT_TEAM=""
+          fi
+          APP_PATH=$(find build/ios/DerivedData/Build/Products/Release-iphoneos -maxdepth 1 -name "*.app" | head -n 1)
+          if [ -z "$APP_PATH" ]; then
+            echo "Error: Built .app bundle not found"
+            exit 1
+          fi
+          cp -R "$APP_PATH" build/ios/Payload/
+          cd build/ios && zip -r -y BrendOmbor-unsigned.ipa Payload
+    artifacts:
+      - build/ios/BrendOmbor-unsigned.ipa
+      - build/ios/DerivedData/Build/Products/Release-iphoneos/*.app
+
+  ios-appstore:
+    name: Brend Ombor iOS (Signed App Store / TestFlight)
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    integrations:
+      # Codemagic UI -> Teams / User settings -> Integrations -> App Store Connect
+      # Kalit nomini "appstore_connect" deb saqlang (yoki shu nomni o'zgartiring).
+      app_store_connect: appstore_connect
+    environment:
+      ios_signing:
+        distribution_type: app_store
+        bundle_identifier: com.brendombor.app
+      node: 22
+      xcode: latest
+      cocoapods: default
+      vars:
+        XCODE_PROJECT: "ios/App/App.xcodeproj"
+        XCODE_WORKSPACE: "ios/App/App.xcworkspace"
+        XCODE_SCHEME: "App"
+        BUNDLE_ID: "com.brendombor.app"
+    scripts:
+      - name: Install npm dependencies
+        script: |
+          echo "=== Brend Ombor iOS Build: $(node -p 'process.platform + "-" + process.arch + " " + process.version'), npm $(npm --version) ==="
+          unset npm_config_omit NPM_CONFIG_OMIT
+          npm ci --include=optional --no-audit --no-fund || npm install --include=optional --no-audit --no-fund
+          verify_native() {
+            node -e "
+              Promise.all([
+                import('rolldown'),
+                import('lightningcss'),
+                import('@tailwindcss/oxide'),
+                import('esbuild')
+              ]).then(() => {
+                console.log('All native build bindings loaded successfully!');
+              }).catch((err) => {
+                console.error('Native binding check failed:', err.message);
+                process.exit(1);
+              });
+            "
+          }
+          if ! verify_native; then
+            echo "Native bindings missing; clearing node_modules and package-lock.json and reinstalling..."
+            rm -rf node_modules package-lock.json
+            npm install --include=optional --no-audit --no-fund
+          fi
+          if ! verify_native && [ "$(uname -s)" = "Darwin" ]; then
+            echo "Force-installing darwin-$(node -p process.arch) native bindings..."
+            ARCH=$(node -p "process.arch")
+            ROLLDOWN_VER=$(node -p "require('./node_modules/rolldown/package.json').version")
+            OXIDE_VER=$(node -p "require('./node_modules/@tailwindcss/oxide/package.json').version")
+            LIGHTNING_VER=$(node -p "require('./node_modules/lightningcss/package.json').version")
+            ESBUILD_VER=$(node -p "require('./node_modules/esbuild/package.json').version")
+            npm install --no-save --include=optional --no-audit --no-fund \
+              "@rolldown/binding-darwin-${ARCH}@${ROLLDOWN_VER}" \
+              "@tailwindcss/oxide-darwin-${ARCH}@${OXIDE_VER}" \
+              "lightningcss-darwin-${ARCH}@${LIGHTNING_VER}" \
+              "@esbuild/darwin-${ARCH}@${ESBUILD_VER}"
+            verify_native
+          fi
+      - name: Build React + Vite web bundle
+        script: |
+          npm run build
+      - name: Sync Capacitor iOS
+        script: |
+          npx cap sync ios
+      - name: Install CocoaPods dependencies (if Podfile exists)
+        script: |
+          if [ -f "ios/App/Podfile" ]; then
+            cd ios/App && pod install --repo-update && cd ../..
+          else
+            echo "Using Swift Package Manager (CapApp-SPM)"
+          fi
+      - name: Set up Xcode signing profiles
+        script: |
+          xcode-project use-profiles
+      - name: Increment iOS build number
+        script: |
+          sed -i '' "s/CURRENT_PROJECT_VERSION = [0-9]*;/CURRENT_PROJECT_VERSION = ${CM_BUILD_NUMBER:-1};/g" ios/App/App.xcodeproj/project.pbxproj
+      - name: Build signed IPA for App Store
+        script: |
+          if [ -d "$XCODE_WORKSPACE" ]; then
+            xcode-project build-ipa \
+              --workspace "$XCODE_WORKSPACE" \
+              --scheme "$XCODE_SCHEME"
+          else
+            xcodebuild -resolvePackageDependencies -project "$XCODE_PROJECT" -scheme "$XCODE_SCHEME"
+            xcode-project build-ipa \
+              --project "$XCODE_PROJECT" \
+              --scheme "$XCODE_SCHEME"
+          fi
+    artifacts:
+      - build/ios/ipa/*.ipa
+      - /tmp/xcodebuild_logs/*.log
+      - ios/App/*.app.dSYM.zip
+    publishing:
+      app_store_connect:
+        auth: integration
+        submit_to_testflight: true
+        beta_groups:
+          - Internal Testers

@@ -1,0 +1,1980 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 1. Global Safety Net (Default Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // 2. Primitive & Identity Helpers
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isBootstrappedAdmin() {
+      return isVerified() &&
+        request.auth.token.email is string &&
+        request.auth.token.email.lower() in [
+          'assalomu408@gmail.com',
+          'assdsh993@gmail.com',
+          'a1sanjar73@gmail.com'
+        ];
+    }
+
+    function isInvitedEmail(emails) {
+      return request.auth.token.email is string && (
+        request.auth.token.email in emails ||
+        request.auth.token.email.lower() in emails
+      );
+    }
+
+    function authEmailSha256() {
+      return hashing.sha256(request.auth.token.email.lower().toUtf8()).toHexString().lower();
+    }
+
+    function isPlatformAdmin() {
+      return isVerified() && (
+        isBootstrappedAdmin() ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function hasValidStoreId(data) {
+      return data.storeId is string && data.storeId.size() >= 1 && data.storeId.size() <= 128;
+    }
+
+    function hasTenantFields(data) {
+      return data.ownerUid is string &&
+        data.ownerUid.size() >= 1 &&
+        data.ownerUid.size() <= 128 &&
+        data.memberUids is list &&
+        data.memberUids.size() >= 1 &&
+        data.memberUids.size() <= 50 &&
+        data.memberUids[0] is string &&
+        request.auth.uid in data.memberUids &&
+        data.createdBy is string &&
+        data.createdBy.size() >= 1 &&
+        data.createdBy.size() <= 128 &&
+        data.createdAt == request.time &&
+        data.updatedAt == request.time;
+    }
+
+    function hasAdminTenantFieldsForWs(data, workspaceId) {
+      return hasAdminTenantFields(data) &&
+        data.ownerUid == wsDoc(workspaceId).data.ownerUid &&
+        wsDoc(workspaceId).data.ownerUid in data.adminUids;
+    }
+
+    function hasTenantFieldsUpdate(data) {
+      return data.ownerUid is string &&
+        data.ownerUid == existing().ownerUid &&
+        data.memberUids is list &&
+        data.memberUids.size() >= 1 &&
+        data.memberUids.size() <= 50 &&
+        data.memberUids[0] is string &&
+        data.createdBy is string &&
+        data.createdBy == existing().createdBy &&
+        data.createdAt == existing().createdAt &&
+        data.updatedAt == request.time;
+    }
+
+    function hasAdminTenantFields(data) {
+      return data.ownerUid is string &&
+        data.ownerUid.size() >= 1 &&
+        data.ownerUid.size() <= 128 &&
+        data.adminUids is list &&
+        data.adminUids.size() >= 1 &&
+        data.adminUids.size() <= 20 &&
+        data.adminUids[0] is string &&
+        request.auth.uid in data.adminUids &&
+        data.createdBy is string &&
+        data.createdBy.size() >= 1 &&
+        data.createdBy.size() <= 128 &&
+        data.createdAt == request.time &&
+        data.updatedAt == request.time;
+    }
+
+    function hasAdminTenantFieldsUpdate(data) {
+      return data.ownerUid is string &&
+        data.ownerUid == existing().ownerUid &&
+        data.adminUids is list &&
+        data.adminUids.size() >= 1 &&
+        data.adminUids.size() <= 20 &&
+        data.adminUids[0] is string &&
+        data.createdBy is string &&
+        data.createdBy == existing().createdBy &&
+        data.createdAt == existing().createdAt &&
+        data.updatedAt == request.time;
+    }
+
+    // Master Gate Workspace Relational Helpers
+    // Write paths use getAfter/existsAfter for batched atomicity; read paths use get/exists.
+    function wsDoc(workspaceId) {
+      return getAfter(/databases/$(database)/documents/workspaces/$(workspaceId));
+    }
+
+    function wsExists(workspaceId) {
+      return existsAfter(/databases/$(database)/documents/workspaces/$(workspaceId));
+    }
+
+    function wsReadDoc(workspaceId) {
+      return get(/databases/$(database)/documents/workspaces/$(workspaceId));
+    }
+
+    function wsReadExists(workspaceId) {
+      return exists(/databases/$(database)/documents/workspaces/$(workspaceId));
+    }
+
+    function isWsMember(workspaceId) {
+      return isVerified() && wsExists(workspaceId) && (
+        wsDoc(workspaceId).data.ownerUid == request.auth.uid ||
+        request.auth.uid in wsDoc(workspaceId).data.memberUids ||
+        request.auth.uid in wsDoc(workspaceId).data.adminUids
+      );
+    }
+
+    function isWsMemberRead(workspaceId) {
+      return isVerified() && wsReadExists(workspaceId) && (
+        wsReadDoc(workspaceId).data.ownerUid == request.auth.uid ||
+        request.auth.uid in wsReadDoc(workspaceId).data.memberUids ||
+        request.auth.uid in wsReadDoc(workspaceId).data.adminUids
+      );
+    }
+
+    function memberDoc(workspaceId) {
+      return get(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid));
+    }
+
+    function hasActiveMemberRecord(workspaceId) {
+      return exists(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid)) &&
+        memberDoc(workspaceId).data.isActive == true;
+    }
+
+    function isWsAdmin(workspaceId) {
+      return isVerified() && wsExists(workspaceId) && (
+        isPlatformAdmin() ||
+        wsDoc(workspaceId).data.ownerUid == request.auth.uid ||
+        request.auth.uid in wsDoc(workspaceId).data.adminUids ||
+        (
+          hasActiveMemberRecord(workspaceId) &&
+          memberDoc(workspaceId).data.roleId in ['owner', 'admin']
+        )
+      );
+    }
+
+    function isWsAdminRead(workspaceId) {
+      return isVerified() && wsReadExists(workspaceId) && (
+        isPlatformAdmin() ||
+        wsReadDoc(workspaceId).data.ownerUid == request.auth.uid ||
+        request.auth.uid in wsReadDoc(workspaceId).data.adminUids ||
+        (
+          hasActiveMemberRecord(workspaceId) &&
+          memberDoc(workspaceId).data.roleId in ['owner', 'admin']
+        )
+      );
+    }
+
+    function canMemberStore(workspaceId, storeId) {
+      return isWsAdmin(workspaceId) || (
+        hasActiveMemberRecord(workspaceId) &&
+        storeId is string &&
+        memberDoc(workspaceId).data.assignedStoreIds.size() > 0 &&
+        storeId in memberDoc(workspaceId).data.assignedStoreIds
+      );
+    }
+
+    function hasMemberPerm(workspaceId, perm) {
+      return isWsAdmin(workspaceId) || (
+        hasActiveMemberRecord(workspaceId) &&
+        perm in memberDoc(workspaceId).data.permissions
+      );
+    }
+
+    function canReadRow(data) {
+      return isVerified() && (
+        isPlatformAdmin() ||
+        data.ownerUid == request.auth.uid ||
+        request.auth.uid in data.memberUids
+      );
+    }
+
+    // Strict Branch-Isolated Read Gates (enforced on BOTH get and list)
+    function canGetStoreDoc(workspaceId, docId) {
+      return isVerified() && isValidId(workspaceId) && isValidId(docId) && (
+        isPlatformAdmin() ||
+        isWsAdminRead(workspaceId) ||
+        (
+          isWsMemberRead(workspaceId) &&
+          hasActiveMemberRecord(workspaceId) &&
+          resource != null &&
+          resource.data.storeId is string &&
+          memberDoc(workspaceId).data.assignedStoreIds.size() > 0 &&
+          resource.data.storeId in memberDoc(workspaceId).data.assignedStoreIds
+        )
+      );
+    }
+
+    function canReadStoreRow(workspaceId, data) {
+      return isVerified() && isValidId(workspaceId) && (
+        isPlatformAdmin() ||
+        isWsAdminRead(workspaceId) ||
+        (
+          isWsMemberRead(workspaceId) &&
+          hasActiveMemberRecord(workspaceId) &&
+          data.storeId is string &&
+          memberDoc(workspaceId).data.assignedStoreIds.size() > 0 &&
+          data.storeId in memberDoc(workspaceId).data.assignedStoreIds
+        )
+      );
+    }
+
+    function canReadAdminRow(workspaceId, data) {
+      return isVerified() && isValidId(workspaceId) && (
+        isPlatformAdmin() ||
+        isWsAdminRead(workspaceId) ||
+        (
+          data.ownerUid == request.auth.uid ||
+          request.auth.uid in data.adminUids
+        )
+      );
+    }
+
+    // 3. Entity Validation Blueprints
+    function isValidAdminRecord(data, userId) {
+      return data.keys().hasAll(['id', 'email', 'createdAt']) &&
+        data.keys().hasOnly(['id', 'email', 'createdAt']) &&
+        data.id == userId &&
+        data.email is string &&
+        data.email.size() <= 200 &&
+        data.createdAt == request.time;
+    }
+
+    function isValidUserProfileCreate(data, userId) {
+      return data.keys().hasAll(['id', 'displayName', 'activeWorkspaceId', 'workspaceIds', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'displayName', 'activeWorkspaceId', 'workspaceIds', 'createdAt', 'updatedAt']) &&
+        data.id == userId &&
+        data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 120 &&
+        data.activeWorkspaceId is string && data.activeWorkspaceId.size() <= 128 &&
+        data.workspaceIds is list && data.workspaceIds.size() <= 20 &&
+        (data.workspaceIds.size() == 0 || data.workspaceIds[0] is string) &&
+        data.createdAt == request.time &&
+        data.updatedAt == request.time;
+    }
+
+    function isValidUserProfileUpdate(data, userId) {
+      return data.keys().hasAll(['id', 'displayName', 'activeWorkspaceId', 'workspaceIds', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'displayName', 'activeWorkspaceId', 'workspaceIds', 'createdAt', 'updatedAt']) &&
+        data.id == userId &&
+        data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 120 &&
+        data.activeWorkspaceId is string && data.activeWorkspaceId.size() <= 128 &&
+        data.workspaceIds is list && data.workspaceIds.size() <= 20 &&
+        (data.workspaceIds.size() == 0 || data.workspaceIds[0] is string) &&
+        data.createdAt == existing().createdAt &&
+        data.updatedAt == request.time;
+    }
+
+    function isValidUserPrivateInfo(data, userId) {
+      return data.keys().hasAll(['id', 'email', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'email', 'updatedAt']) &&
+        data.id == userId &&
+        data.email is string && data.email.size() <= 200 &&
+        data.updatedAt == request.time;
+    }
+
+    function isValidWorkspaceBase(data, workspaceId) {
+      return data.keys().hasAll([
+          'id', 'name', 'ownerUid', 'ownerEmail', 'memberUids',
+          'adminUids', 'invitedEmails', 'roles', 'settings', 'version',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'name', 'ownerUid', 'ownerEmail', 'memberUids',
+          'adminUids', 'invitedEmails', 'roles', 'settings', 'version',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.id == workspaceId &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 120 &&
+        data.ownerUid is string && data.ownerUid.size() >= 1 && data.ownerUid.size() <= 128 &&
+        data.ownerEmail is string && data.ownerEmail.size() <= 200 &&
+        data.memberUids is list && data.memberUids.size() >= 1 && data.memberUids.size() <= 50 && data.memberUids[0] is string &&
+        data.adminUids is list && data.adminUids.size() >= 1 && data.adminUids.size() <= 20 && data.adminUids[0] is string &&
+        data.invitedEmails is list && data.invitedEmails.size() <= 50 && (data.invitedEmails.size() == 0 || data.invitedEmails[0] is string) &&
+        data.roles is list && data.roles.size() >= 1 && data.roles.size() <= 20 && data.roles[0] is map &&
+        data.settings is map &&
+        data.version is number && data.version >= 1;
+    }
+
+    function isValidWorkspaceCreate(data, workspaceId) {
+      return isValidWorkspaceBase(data, workspaceId) &&
+        data.ownerUid == request.auth.uid &&
+        request.auth.uid in data.memberUids &&
+        request.auth.uid in data.adminUids &&
+        data.createdAt == request.time &&
+        data.updatedAt == request.time;
+    }
+
+    function isValidWorkspaceUpdate(data, workspaceId) {
+      return isValidWorkspaceBase(data, workspaceId) &&
+        data.ownerUid == existing().ownerUid &&
+        data.createdAt == existing().createdAt &&
+        data.updatedAt == request.time;
+    }
+
+    function isValidWorkspaceMemberBase(data, memberUid) {
+      return data.keys().hasAll([
+          'uid', 'staffId', 'displayName', 'roleId', 'assignedStoreIds',
+          'permissions', 'isActive', 'ownerUid', 'memberUids', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'uid', 'staffId', 'displayName', 'roleId', 'assignedStoreIds',
+          'permissions', 'isActive', 'ownerUid', 'memberUids', 'createdAt', 'updatedAt'
+        ]) &&
+        data.uid == memberUid &&
+        data.staffId is string && data.staffId.size() >= 1 && data.staffId.size() <= 128 &&
+        data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 120 &&
+        data.roleId is string && data.roleId.size() >= 1 && data.roleId.size() <= 64 &&
+        data.assignedStoreIds is list && data.assignedStoreIds.size() <= 20 && (data.assignedStoreIds.size() == 0 || data.assignedStoreIds[0] is string) &&
+        data.permissions is list && data.permissions.size() <= 30 && (data.permissions.size() == 0 || data.permissions[0] is string) &&
+        data.isActive is bool &&
+        data.ownerUid is string && data.ownerUid.size() <= 128 &&
+        data.memberUids is list && data.memberUids.size() >= 1 && data.memberUids.size() <= 50 && data.memberUids[0] is string;
+    }
+
+    function isValidPrivateSettingsBase(data, docId) {
+      return data.keys().hasAll(['id', 'integrations', 'ownerUid', 'adminUids', 'createdBy', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'integrations', 'ownerUid', 'adminUids', 'createdBy', 'createdAt', 'updatedAt']) &&
+        data.id == docId &&
+        data.integrations is map &&
+        data.ownerUid is string && data.ownerUid.size() <= 128 &&
+        data.createdBy is string && data.createdBy.size() >= 1 && data.createdBy.size() <= 128 &&
+        data.adminUids is list && data.adminUids.size() >= 1 && data.adminUids.size() <= 20 && data.adminUids[0] is string;
+    }
+
+    function isValidStore(data, storeId, isCreate) {
+      return data.keys().hasAll([
+          'id', 'name', 'address', 'phone', 'isActive', 'defaultWarehouseId',
+          'storeId', 'ownerUid', 'memberUids', 'createdBy', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'name', 'address', 'phone', 'isActive', 'defaultWarehouseId',
+          'storeCode', 'color', 'storeId', 'ownerUid', 'memberUids', 'createdBy',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.id == storeId &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 120 &&
+        data.address is string && data.address.size() <= 300 &&
+        data.phone is string && data.phone.size() <= 40 &&
+        data.isActive is bool &&
+        data.defaultWarehouseId is string && data.defaultWarehouseId.size() <= 128 &&
+        (!('storeCode' in data) || (data.storeCode is string && data.storeCode.size() <= 20)) &&
+        (!('color' in data) || (data.color is string && data.color.size() <= 20)) &&
+        hasValidStoreId(data) &&
+        (isCreate ? hasTenantFields(data) : hasTenantFieldsUpdate(data));
+    }
+
+    function isValidWarehouse(data, warehouseId, isCreate) {
+      return data.keys().hasAll([
+          'id', 'name', 'address', 'isMain', 'storeId',
+          'ownerUid', 'memberUids', 'createdBy', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'name', 'address', 'isMain', 'storeId',
+          'ownerUid', 'memberUids', 'createdBy', 'createdAt', 'updatedAt'
+        ]) &&
+        data.id == warehouseId &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 120 &&
+        data.address is string && data.address.size() <= 300 &&
+        data.isMain is bool &&
+        hasValidStoreId(data) &&
+        (isCreate ? hasTenantFields(data) : hasTenantFieldsUpdate(data));
+    }
+
+    function isValidCategory(data, categoryId, isCreate) {
+      return data.keys().hasAll([
+          'id', 'nameUz', 'nameRu', 'sortOrder', 'storeId',
+          'ownerUid', 'memberUids', 'createdBy', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'nameUz', 'nameRu', 'parentId', 'sortOrder', 'storeId',
+          'ownerUid', 'memberUids', 'createdBy', 'createdAt', 'updatedAt'
+        ]) &&
+        data.id == categoryId &&
+        data.nameUz is string && data.nameUz.size() >= 1 && data.nameUz.size() <= 120 &&
+        data.nameRu is string && data.nameRu.size() >= 1 && data.nameRu.size() <= 120 &&
+        (!('parentId' in data) || (data.parentId is string && data.parentId.size() <= 128)) &&
+        data.sortOrder is number &&
+        hasValidStoreId(data) &&
+        (isCreate ? hasTenantFields(data) : hasTenantFieldsUpdate(data));
+    }
+
+    function isValidBrand(data, brandId, isCreate) {
+      return data.keys().hasAll([
+          'id', 'name', 'storeId', 'ownerUid', 'memberUids',
+          'createdBy', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'name', 'country', 'storeId', 'ownerUid', 'memberUids',
+          'createdBy', 'createdAt', 'updatedAt'
+        ]) &&
+        data.id == brandId &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 120 &&
+        (!('country' in data) || (data.country is string && data.country.size() <= 80)) &&
+        hasValidStoreId(data) &&
+        (isCreate ? hasTenantFields(data) : hasTenantFieldsUpdate(data));
+    }
+
+    function isValidProduct(data, productId, isCreate) {
+      return data.keys().hasAll([
+          'id', 'name', 'categoryId', 'unit', 'tags', 'isPublishedOnline',
+          'variants', 'storeId', 'ownerUid', 'memberUids', 'createdBy',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'name', 'categoryId', 'brandId', 'collection', 'unit',
+          'description', 'photoUrl', 'supplierId', 'tags', 'isPublishedOnline',
+          'variants', 'storeId', 'ownerUid', 'memberUids', 'createdBy',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.id == productId &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 200 &&
+        data.categoryId is string && data.categoryId.size() >= 1 && data.categoryId.size() <= 128 &&
+        (!('brandId' in data) || (data.brandId is string && data.brandId.size() <= 128)) &&
+        (!('collection' in data) || (data.collection is string && data.collection.size() <= 120)) &&
+        data.unit in ['dona', 'juft', 'kg', 'litr', 'quti', 'metr'] &&
+        (!('description' in data) || (data.description is string && data.description.size() <= 1000)) &&
+        (!('photoUrl' in data) || (data.photoUrl is string && data.photoUrl.size() <= 150000)) &&
+        (!('supplierId' in data) || (data.supplierId is string && data.supplierId.size() <= 128)) &&
+        data.tags is list && data.tags.size() <= 30 && (data.tags.size() == 0 || data.tags[0] is string) &&
+        data.isPublishedOnline is bool &&
+        data.variants is list && data.variants.size() >= 1 && data.variants.size() <= 50 && data.variants[0] is map &&
+        hasValidStoreId(data) &&
+        (isCreate ? hasTenantFields(data) : hasTenantFieldsUpdate(data));
+    }
+
+    function isValidSupplier(data, supplierId, isCreate) {
+      return data.keys().hasAll([
+          'id', 'name', 'contactName', 'phone', 'debtBalance', 'storeId',
+          'ownerUid', 'memberUids', 'createdBy', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'name', 'contactName', 'phone', 'address', 'notes', 'debtBalance',
+          'storeId', 'ownerUid', 'memberUids', 'createdBy', 'createdAt', 'updatedAt'
+        ]) &&
+        data.id == supplierId &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 150 &&
+        data.contactName is string && data.contactName.size() <= 120 &&
+        data.phone is string && data.phone.size() <= 40 &&
+        (!('address' in data) || (data.address is string && data.address.size() <= 300)) &&
+        (!('notes' in data) || (data.notes is string && data.notes.size() <= 500)) &&
+        data.debtBalance is number &&
+        hasValidStoreId(data) &&
+        (isCreate ? hasTenantFields(data) : hasTenantFieldsUpdate(data));
+    }
+
+    function isValidStockItem(data, stockItemId, isCreate) {
+      return data.keys().hasAll([
+          'id', 'productId', 'variantId', 'warehouseId', 'qty', 'storeId',
+          'ownerUid', 'memberUids', 'createdBy', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'productId', 'variantId', 'warehouseId', 'qty', 'storeId',
+          'ownerUid', 'memberUids', 'createdBy', 'createdAt', 'updatedAt'
+        ]) &&
+        data.id == stockItemId &&
+        data.productId is string && data.productId.size() <= 128 &&
+        data.variantId is string && data.variantId.size() <= 128 &&
+        data.warehouseId is string && data.warehouseId.size() <= 128 &&
+        data.qty is number &&
+        hasValidStoreId(data) &&
+        (isCreate ? hasTenantFields(data) : hasTenantFieldsUpdate(data));
+    }
+
+    function isValidStockMovement(data, movementId, isCreate) {
+      return data.keys().hasAll([
+          'id', 'productId', 'variantId', 'warehouseId', 'type', 'qtyDelta',
+          'qtyAfter', 'unitCost', 'storeId', 'ownerUid', 'memberUids',
+          'createdBy', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'productId', 'variantId', 'warehouseId', 'type', 'qtyDelta',
+          'qtyAfter', 'unitCost', 'referenceId', 'referenceType', 'note',
+          'storeId', 'ownerUid', 'memberUids', 'createdBy', 'createdAt', 'updatedAt'
+        ]) &&
+        data.id == movementId &&
+        data.productId is string && data.productId.size() <= 128 &&
+        data.variantId is string && data.variantId.size() <= 128 &&
+        data.warehouseId is string && data.warehouseId.size() <= 128 &&
+        data.type is string && data.type.size() <= 40 &&
+        data.qtyDelta is number &&
+        data.qtyAfter is number &&
+        data.unitCost is number &&
+        (!('referenceId' in data) || (data.referenceId is string && data.referenceId.size() <= 128)) &&
+        (!('referenceType' in data) || (data.referenceType is string && data.referenceType.size() <= 64)) &&
+        (!('note' in data) || (data.note is string && data.note.size() <= 500)) &&
+        hasValidStoreId(data) &&
+        (isCreate ? hasTenantFields(data) : hasTenantFieldsUpdate(data));
+    }
+
+    function isValidPurchaseReceipt(data, receiptId, isCreate) {
+      return data.keys().hasAll([
+          'id', 'number', 'supplierId', 'warehouseId', 'items', 'totalAmount',
+          'paidAmount', 'paymentStatus', 'storeId', 'ownerUid', 'memberUids',
+          'createdBy', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'number', 'supplierId', 'warehouseId', 'categoryId', 'items',
+          'totalAmount', 'paidAmount', 'paymentStatus', 'note', 'storeId',
+          'ownerUid', 'memberUids', 'createdBy', 'createdAt', 'updatedAt'
+        ]) &&
+        data.id == receiptId &&
+        data.number is string && data.number.size() >= 1 && data.number.size() <= 64 &&
+        data.supplierId is string && data.supplierId.size() <= 128 &&
+        data.warehouseId is string && data.warehouseId.size() <= 128 &&
+        (!('categoryId' in data) || (data.categoryId is string && data.categoryId.size() <= 128)) &&
+        data.items is list && data.items.size() >= 1 && data.items.size() <= 200 && data.items[0] is map &&
+        data.totalAmount is number && data.totalAmount >= 0 &&
+        data.paidAmount is number && data.paidAmount >= 0 &&
+        data.paymentStatus in ['paid', 'partial', 'debt'] &&
+        (!('note' in data) || (data.note is string && data.note.size() <= 500)) &&
+        hasValidStoreId(data) &&
+        (isCreate ? hasTenantFields(data) : hasTenantFieldsUpdate(data));
+    }
+
+    function isValidPurchaseOrder(data, poId, isCreate) {
+      return data.keys().hasAll([
+          'id', 'number', 'supplierId', 'warehouseId', 'items', 'totalAmount',
+          'status', 'storeId', 'ownerUid', 'memberUids', 'createdBy',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'number', 'supplierId', 'warehouseId', 'items', 'totalAmount',
+          'status', 'expectedDate', 'note', 'storeId', 'ownerUid', 'memberUids',
+          'createdBy', 'createdAt', 'updatedAt'
+        ]) &&
+        data.id == poId &&
+        data.number is string && data.number.size() >= 1 && data.number.size() <= 64 &&
+        data.supplierId is string && data.supplierId.size() <= 128 &&
+        data.warehouseId is string && data.warehouseId.size() <= 128 &&
+        data.items is list && data.items.size() >= 1 && data.items.size() <= 200 && data.items[0] is map &&
+        data.totalAmount is number && data.totalAmount >= 0 &&
+        data.status in ['draft', 'ordered', 'received', 'canceled'] &&
+        (!('expectedDate' in data) || (data.expectedDate is string && data.expectedDate.size() <= 64)) &&
+        (!('note' in data) || (data.note is string && data.note.size() <= 500)) &&
+        hasValidStoreId(data) &&
+        (isCreate ? hasTenantFields(data) : hasTenantFieldsUpdate(data));
+    }
+
+    function isValidTransfer(data, transferId, isCreate) {
+      return data.keys().hasAll([
+          'id', 'number', 'fromWarehouseId', 'toWarehouseId', 'items', 'status',
+          'storeId', 'ownerUid', 'memberUids', 'createdBy', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'number', 'fromWarehouseId', 'toWarehouseId', 'items', 'status',
+          'note', 'storeId', 'ownerUid', 'memberUids', 'createdBy', 'createdAt', 'updatedAt'
+        ]) &&
+        data.id == transferId &&
+        data.number is string && data.number.size() >= 1 && data.number.size() <= 64 &&
+        data.fromWarehouseId is string && data.fromWarehouseId.size() <= 128 &&
+        data.toWarehouseId is string && data.toWarehouseId.size() <= 128 &&
+        data.items is list && data.items.size() >= 1 && data.items.size() <= 200 && data.items[0] is map &&
+        data.status in ['sent', 'received', 'discrepancy'] &&
+        (!('note' in data) || (data.note is string && data.note.size() <= 500)) &&
+        hasValidStoreId(data) &&
+        (isCreate ? hasTenantFields(data) : hasTenantFieldsUpdate(data));
+    }
+
+    function isValidWriteOff(data, writeOffId, isCreate) {
+      return data.keys().hasAll([
+          'id', 'number', 'warehouseId', 'reason', 'items', 'totalCost',
+          'storeId', 'ownerUid', 'memberUids', 'createdBy', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'number', 'warehouseId', 'reason', 'items', 'totalCost', 'note',
+          'storeId', 'ownerUid', 'memberUids', 'createdBy', 'createdAt', 'updatedAt'
+        ]) &&
+        data.id == writeOffId &&
+        data.number is string && data.number.size() >= 1 && data.number.size() <= 64 &&
+        data.warehouseId is string && data.warehouseId.size() <= 128 &&
+        data.reason in ['damaged', 'expired', 'lost', 'other'] &&
+        data.items is list && data.items.size() >= 1 && data.items.size() <= 200 && data.items[0] is map &&
+        data.totalCost is number && data.totalCost >= 0 &&
+        (!('note' in data) || (data.note is string && data.note.size() <= 500)) &&
+        hasValidStoreId(data) &&
+        (isCreate ? hasTenantFields(data) : hasTenantFieldsUpdate(data));
+    }
+
+    function isValidStocktake(data, stocktakeId, isCreate) {
+      return data.keys().hasAll([
+          'id', 'number', 'warehouseId', 'status', 'items', 'totalDiscrepancyValue',
+          'storeId', 'ownerUid', 'memberUids', 'createdBy', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'number', 'warehouseId', 'status', 'items', 'totalDiscrepancyValue',
+          'note', 'storeId', 'ownerUid', 'memberUids', 'createdBy', 'createdAt', 'updatedAt'
+        ]) &&
+        data.id == stocktakeId &&
+        data.number is string && data.number.size() >= 1 && data.number.size() <= 64 &&
+        data.warehouseId is string && data.warehouseId.size() <= 128 &&
+        data.status in ['in_progress', 'completed'] &&
+        data.items is list && data.items.size() <= 500 && (data.items.size() == 0 || data.items[0] is map) &&
+        data.totalDiscrepancyValue is number &&
+        (!('note' in data) || (data.note is string && data.note.size() <= 500)) &&
+        hasValidStoreId(data) &&
+        (isCreate ? hasTenantFields(data) : hasTenantFieldsUpdate(data));
+    }
+
+    function isValidSale(data, saleId, isCreate) {
+      return data.keys().hasAll([
+          'id', 'receiptNumber', 'warehouseId', 'cashierId', 'cashierName', 'items',
+          'subtotal', 'checkDiscountAmount', 'checkDiscountPercent',
+          'loyaltyPointsSpent', 'loyaltyPointsEarned', 'vatAmount', 'totalAmount',
+          'costTotal', 'payments', 'paidAmount', 'debtAmount', 'status',
+          'fiscalStatus', 'storeId', 'ownerUid', 'memberUids', 'createdBy',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'receiptNumber', 'warehouseId', 'shiftId', 'cashierId', 'cashierName',
+          'customerId', 'customerName', 'items', 'subtotal', 'checkDiscountAmount',
+          'checkDiscountPercent', 'loyaltyPointsSpent', 'loyaltyPointsEarned',
+          'promoCode', 'vatAmount', 'totalAmount', 'costTotal', 'payments',
+          'paidAmount', 'debtAmount', 'cashGiven', 'changeAmount', 'paidAt',
+          'status', 'offlineCreated', 'syncedAt', 'fiscalStatus', 'fiscalReceiptId',
+          'note', 'storeId', 'ownerUid', 'memberUids', 'createdBy',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.id == saleId &&
+        data.receiptNumber is string && data.receiptNumber.size() >= 1 && data.receiptNumber.size() <= 64 &&
+        data.warehouseId is string && data.warehouseId.size() <= 128 &&
+        (!('shiftId' in data) || (data.shiftId is string && data.shiftId.size() <= 128)) &&
+        data.cashierId is string && data.cashierId.size() <= 128 &&
+        data.cashierName is string && data.cashierName.size() <= 120 &&
+        (!('customerId' in data) || (data.customerId is string && data.customerId.size() <= 128)) &&
+        (!('customerName' in data) || (data.customerName is string && data.customerName.size() <= 120)) &&
+        data.items is list && data.items.size() >= 1 && data.items.size() <= 200 && data.items[0] is map &&
+        data.subtotal is number && data.subtotal >= 0 &&
+        data.checkDiscountAmount is number && data.checkDiscountAmount >= 0 &&
+        data.checkDiscountPercent is number && data.checkDiscountPercent >= 0 &&
+        data.loyaltyPointsSpent is number && data.loyaltyPointsSpent >= 0 &&
+        data.loyaltyPointsEarned is number && data.loyaltyPointsEarned >= 0 &&
+        (!('promoCode' in data) || (data.promoCode is string && data.promoCode.size() <= 64)) &&
+        data.vatAmount is number && data.vatAmount >= 0 &&
+        data.totalAmount is number && data.totalAmount >= 0 &&
+        data.costTotal is number && data.costTotal >= 0 &&
+        data.payments is list && data.payments.size() <= 20 && (data.payments.size() == 0 || data.payments[0] is map) &&
+        data.paidAmount is number && data.paidAmount >= 0 &&
+        data.debtAmount is number && data.debtAmount >= 0 &&
+        (!('cashGiven' in data) || data.cashGiven is number) &&
+        (!('changeAmount' in data) || data.changeAmount is number) &&
+        (!('paidAt' in data) || (data.paidAt is string && data.paidAt.size() <= 64)) &&
+        data.status in ['deferred', 'completed', 'returned', 'partial_return'] &&
+        (!('offlineCreated' in data) || data.offlineCreated is bool) &&
+        (!('syncedAt' in data) || (data.syncedAt is string && data.syncedAt.size() <= 64)) &&
+        data.fiscalStatus in ['not_configured', 'pending', 'fiscalized'] &&
+        (!('fiscalReceiptId' in data) || (data.fiscalReceiptId is string && data.fiscalReceiptId.size() <= 128)) &&
+        (!('note' in data) || (data.note is string && data.note.size() <= 500)) &&
+        hasValidStoreId(data) &&
+        (isCreate ? hasTenantFields(data) : hasTenantFieldsUpdate(data));
+    }
+
+    function isValidReturnDoc(data, returnId, isCreate) {
+      return data.keys().hasAll([
+          'id', 'number', 'saleId', 'receiptNumber', 'warehouseId', 'items',
+          'totalRefund', 'refundMethod', 'reason', 'storeId', 'ownerUid',
+          'memberUids', 'createdBy', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'number', 'saleId', 'receiptNumber', 'warehouseId', 'items',
+          'totalRefund', 'refundMethod', 'reason', 'isExchange', 'storeId',
+          'ownerUid', 'memberUids', 'createdBy', 'createdAt', 'updatedAt'
+        ]) &&
+        data.id == returnId &&
+        data.number is string && data.number.size() >= 1 && data.number.size() <= 64 &&
+        data.saleId is string && data.saleId.size() <= 128 &&
+        data.receiptNumber is string && data.receiptNumber.size() <= 64 &&
+        data.warehouseId is string && data.warehouseId.size() <= 128 &&
+        data.items is list && data.items.size() >= 1 && data.items.size() <= 200 && data.items[0] is map &&
+        data.totalRefund is number && data.totalRefund >= 0 &&
+        data.refundMethod is string && data.refundMethod.size() <= 32 &&
+        data.reason is string && data.reason.size() <= 300 &&
+        (!('isExchange' in data) || data.isExchange is bool) &&
+        hasValidStoreId(data) &&
+        (isCreate ? hasTenantFields(data) : hasTenantFieldsUpdate(data));
+    }
+
+    function isValidCashShift(data, shiftId, isCreate) {
+      return data.keys().hasAll([
+          'id', 'number', 'cashierId', 'cashierName', 'openedAt', 'startingCash',
+          'cashSalesTotal', 'cardSalesTotal', 'otherSalesTotal', 'cashRefundsTotal',
+          'cashInTotal', 'cashOutTotal', 'expectedCash', 'status', 'storeId',
+          'ownerUid', 'memberUids', 'createdBy', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'number', 'cashierId', 'cashierName', 'openedAt', 'closedAt',
+          'startingCash', 'cashSalesTotal', 'cardSalesTotal', 'otherSalesTotal',
+          'cashRefundsTotal', 'cashInTotal', 'cashOutTotal', 'expectedCash',
+          'actualCash', 'discrepancy', 'status', 'notes', 'storeId',
+          'ownerUid', 'memberUids', 'createdBy', 'createdAt', 'updatedAt'
+        ]) &&
+        data.id == shiftId &&
+        data.number is string && data.number.size() <= 64 &&
+        data.cashierId is string && data.cashierId.size() <= 128 &&
+        data.cashierName is string && data.cashierName.size() <= 120 &&
+        data.openedAt is string && data.openedAt.size() <= 64 &&
+        (!('closedAt' in data) || (data.closedAt is string && data.closedAt.size() <= 64)) &&
+        data.startingCash is number &&
+        data.cashSalesTotal is number &&
+        data.cardSalesTotal is number &&
+        data.otherSalesTotal is number &&
+        data.cashRefundsTotal is number &&
+        data.cashInTotal is number &&
+        data.cashOutTotal is number &&
+        data.expectedCash is number &&
+        (!('actualCash' in data) || data.actualCash is number) &&
+        (!('discrepancy' in data) || data.discrepancy is number) &&
+        data.status in ['open', 'closed'] &&
+        (!('notes' in data) || (data.notes is string && data.notes.size() <= 500)) &&
+        hasValidStoreId(data) &&
+        (isCreate ? hasTenantFields(data) : hasTenantFieldsUpdate(data));
+    }
+
+    function isValidCashOperation(data, opId, isCreate) {
+      return data.keys().hasAll([
+          'id', 'shiftId', 'type', 'amount', 'reason', 'storeId',
+          'ownerUid', 'memberUids', 'createdBy', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'shiftId', 'type', 'amount', 'reason', 'storeId',
+          'ownerUid', 'memberUids', 'createdBy', 'createdAt', 'updatedAt'
+        ]) &&
+        data.id == opId &&
+        data.shiftId is string && data.shiftId.size() <= 128 &&
+        data.type in ['in', 'out'] &&
+        data.amount is number && data.amount >= 0 &&
+        data.reason is string && data.reason.size() <= 300 &&
+        hasValidStoreId(data) &&
+        (isCreate ? hasTenantFields(data) : hasTenantFieldsUpdate(data));
+    }
+
+    function isValidAccount(data, accountId, isCreate) {
+      return data.keys().hasAll([
+          'id', 'name', 'type', 'balance', 'storeId',
+          'ownerUid', 'memberUids', 'createdBy', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'name', 'type', 'balance', 'isDefault', 'storeId',
+          'ownerUid', 'memberUids', 'createdBy', 'createdAt', 'updatedAt'
+        ]) &&
+        data.id == accountId &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 120 &&
+        data.type in ['cash', 'card_terminal', 'bank'] &&
+        data.balance is number &&
+        (!('isDefault' in data) || data.isDefault is bool) &&
+        hasValidStoreId(data) &&
+        (isCreate ? hasTenantFields(data) : hasTenantFieldsUpdate(data));
+    }
+
+    function isValidFinanceTransaction(data, trxId, isCreate) {
+      return data.keys().hasAll([
+          'id', 'accountId', 'type', 'category', 'amount', 'description',
+          'storeId', 'ownerUid', 'memberUids', 'createdBy', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'accountId', 'toAccountId', 'type', 'category', 'amount',
+          'description', 'referenceId', 'storeId', 'ownerUid', 'memberUids',
+          'createdBy', 'createdAt', 'updatedAt'
+        ]) &&
+        data.id == trxId &&
+        data.accountId is string && data.accountId.size() <= 128 &&
+        (!('toAccountId' in data) || (data.toAccountId is string && data.toAccountId.size() <= 128)) &&
+        data.type in ['income', 'expense', 'transfer'] &&
+        data.category is string && data.category.size() <= 80 &&
+        data.amount is number && data.amount >= 0 &&
+        data.description is string && data.description.size() <= 300 &&
+        (!('referenceId' in data) || (data.referenceId is string && data.referenceId.size() <= 128)) &&
+        hasValidStoreId(data) &&
+        (isCreate ? hasTenantFields(data) : hasTenantFieldsUpdate(data));
+    }
+
+    function isValidExpense(data, expId, isCreate) {
+      return data.keys().hasAll([
+          'id', 'accountId', 'category', 'amount', 'description', 'isRecurring',
+          'date', 'storeId', 'ownerUid', 'memberUids', 'createdBy',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'accountId', 'category', 'amount', 'description', 'isRecurring',
+          'recurringDay', 'date', 'storeId', 'ownerUid', 'memberUids',
+          'createdBy', 'createdAt', 'updatedAt'
+        ]) &&
+        data.id == expId &&
+        data.accountId is string && data.accountId.size() <= 128 &&
+        data.category in ['rent', 'salary', 'utilities', 'delivery', 'marketing', 'taxes', 'other'] &&
+        data.amount is number && data.amount >= 0 &&
+        data.description is string && data.description.size() <= 300 &&
+        data.isRecurring is bool &&
+        (!('recurringDay' in data) || data.recurringDay is number) &&
+        data.date is string && data.date.size() <= 64 &&
+        hasValidStoreId(data) &&
+        (isCreate ? hasTenantFields(data) : hasTenantFieldsUpdate(data));
+    }
+
+    function isValidCustomer(data, customerId, isCreate) {
+      return data.keys().hasAll([
+          'id', 'name', 'phone', 'tags', 'segment', 'totalSpent', 'ordersCount',
+          'debtBalance', 'storeId', 'ownerUid', 'memberUids', 'createdBy',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'name', 'phone', 'birthday', 'gender', 'notes', 'tags', 'segment',
+          'totalSpent', 'ordersCount', 'lastPurchaseAt', 'debtBalance', 'storeId',
+          'ownerUid', 'memberUids', 'createdBy', 'createdAt', 'updatedAt'
+        ]) &&
+        data.id == customerId &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 120 &&
+        data.phone is string && data.phone.size() <= 40 &&
+        (!('birthday' in data) || (data.birthday is string && data.birthday.size() <= 32)) &&
+        (!('gender' in data) || data.gender in ['male', 'female']) &&
+        (!('notes' in data) || (data.notes is string && data.notes.size() <= 500)) &&
+        data.tags is list && data.tags.size() <= 30 && (data.tags.size() == 0 || data.tags[0] is string) &&
+        data.segment in ['new', 'regular', 'vip', 'sleeping'] &&
+        data.totalSpent is number && data.totalSpent >= 0 &&
+        data.ordersCount is number && data.ordersCount >= 0 &&
+        (!('lastPurchaseAt' in data) || (data.lastPurchaseAt is string && data.lastPurchaseAt.size() <= 64)) &&
+        data.debtBalance is number &&
+        hasValidStoreId(data) &&
+        (isCreate ? hasTenantFields(data) : hasTenantFieldsUpdate(data));
+    }
+
+    function isValidLoyaltyAccount(data, loyId, isCreate) {
+      return data.keys().hasAll([
+          'id', 'customerId', 'tier', 'cashbackPercent', 'pointsBalance',
+          'cardNumber', 'storeId', 'ownerUid', 'memberUids', 'createdBy',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'customerId', 'tier', 'cashbackPercent', 'pointsBalance',
+          'cardNumber', 'expiresAt', 'storeId', 'ownerUid', 'memberUids',
+          'createdBy', 'createdAt', 'updatedAt'
+        ]) &&
+        data.id == loyId &&
+        data.customerId is string && data.customerId.size() <= 128 &&
+        data.tier in ['bronze', 'silver', 'gold', 'platinum'] &&
+        data.cashbackPercent is number && data.cashbackPercent >= 0 &&
+        data.pointsBalance is number &&
+        data.cardNumber is string && data.cardNumber.size() <= 64 &&
+        (!('expiresAt' in data) || (data.expiresAt is string && data.expiresAt.size() <= 64)) &&
+        hasValidStoreId(data) &&
+        (isCreate ? hasTenantFields(data) : hasTenantFieldsUpdate(data));
+    }
+
+    function isValidLoyaltyTransaction(data, ltxId, isCreate) {
+      return data.keys().hasAll([
+          'id', 'customerId', 'loyaltyAccountId', 'type', 'points', 'storeId',
+          'ownerUid', 'memberUids', 'createdBy', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'customerId', 'loyaltyAccountId', 'type', 'points', 'saleId',
+          'expiresAt', 'note', 'storeId', 'ownerUid', 'memberUids',
+          'createdBy', 'createdAt', 'updatedAt'
+        ]) &&
+        data.id == ltxId &&
+        data.customerId is string && data.customerId.size() <= 128 &&
+        data.loyaltyAccountId is string && data.loyaltyAccountId.size() <= 128 &&
+        data.type in ['earn', 'spend', 'expire', 'birthday_bonus'] &&
+        data.points is number &&
+        (!('saleId' in data) || (data.saleId is string && data.saleId.size() <= 128)) &&
+        (!('expiresAt' in data) || (data.expiresAt is string && data.expiresAt.size() <= 64)) &&
+        (!('note' in data) || (data.note is string && data.note.size() <= 300)) &&
+        hasValidStoreId(data) &&
+        (isCreate ? hasTenantFields(data) : hasTenantFieldsUpdate(data));
+    }
+
+    function isValidDebt(data, debtId, isCreate) {
+      return data.keys().hasAll([
+          'id', 'customerId', 'customerName', 'originalAmount', 'remainingAmount',
+          'status', 'payments', 'storeId', 'ownerUid', 'memberUids',
+          'createdBy', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'customerId', 'customerName', 'saleId', 'originalAmount',
+          'remainingAmount', 'dueDate', 'status', 'payments', 'storeId',
+          'ownerUid', 'memberUids', 'createdBy', 'createdAt', 'updatedAt'
+        ]) &&
+        data.id == debtId &&
+        data.customerId is string && data.customerId.size() <= 128 &&
+        data.customerName is string && data.customerName.size() <= 120 &&
+        (!('saleId' in data) || (data.saleId is string && data.saleId.size() <= 128)) &&
+        data.originalAmount is number && data.originalAmount >= 0 &&
+        data.remainingAmount is number && data.remainingAmount >= 0 &&
+        (!('dueDate' in data) || (data.dueDate is string && data.dueDate.size() <= 64)) &&
+        data.status in ['open', 'partial', 'paid'] &&
+        data.payments is list && data.payments.size() <= 100 && (data.payments.size() == 0 || data.payments[0] is map) &&
+        hasValidStoreId(data) &&
+        (isCreate ? hasTenantFields(data) : hasTenantFieldsUpdate(data));
+    }
+
+    function isValidPromoCode(data, promoId, isCreate) {
+      return data.keys().hasAll([
+          'id', 'code', 'discountType', 'discountValue', 'minOrderAmount',
+          'maxUses', 'usedCount', 'isActive', 'storeId', 'ownerUid',
+          'memberUids', 'createdBy', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'code', 'discountType', 'discountValue', 'minOrderAmount',
+          'maxUses', 'usedCount', 'expiresAt', 'isActive', 'storeId',
+          'ownerUid', 'memberUids', 'createdBy', 'createdAt', 'updatedAt'
+        ]) &&
+        data.id == promoId &&
+        data.code is string && data.code.size() >= 1 && data.code.size() <= 64 &&
+        data.discountType in ['percent', 'fixed'] &&
+        data.discountValue is number && data.discountValue >= 0 &&
+        data.minOrderAmount is number && data.minOrderAmount >= 0 &&
+        data.maxUses is number && data.maxUses >= 0 &&
+        data.usedCount is number && data.usedCount >= 0 &&
+        (!('expiresAt' in data) || (data.expiresAt is string && data.expiresAt.size() <= 64)) &&
+        data.isActive is bool &&
+        hasValidStoreId(data) &&
+        (isCreate ? hasTenantFields(data) : hasTenantFieldsUpdate(data));
+    }
+
+    function isValidStaffDirectoryEntry(data, staffId, isCreate) {
+      return data.keys().hasAll([
+          'id', 'userId', 'name', 'roleId', 'assignedStoreIds', 'isActive',
+          'schedule', 'storeId', 'ownerUid', 'memberUids', 'createdBy',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'userId', 'name', 'roleId', 'assignedStoreIds',
+          'customPermissions', 'isActive', 'avatarColor', 'schedule',
+          'storeId', 'ownerUid', 'memberUids', 'createdBy', 'createdAt', 'updatedAt'
+        ]) &&
+        data.id == staffId &&
+        data.userId is string && data.userId.size() <= 128 &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 120 &&
+        data.roleId is string && data.roleId.size() <= 64 &&
+        data.assignedStoreIds is list && data.assignedStoreIds.size() <= 20 && (data.assignedStoreIds.size() == 0 || data.assignedStoreIds[0] is string) &&
+        (!('customPermissions' in data) || (data.customPermissions is list && data.customPermissions.size() <= 30 && (data.customPermissions.size() == 0 || data.customPermissions[0] is string))) &&
+        data.isActive is bool &&
+        (!('avatarColor' in data) || (data.avatarColor is string && data.avatarColor.size() <= 20)) &&
+        data.schedule is string && data.schedule.size() <= 120 &&
+        hasValidStoreId(data) &&
+        (isCreate ? hasTenantFields(data) : hasTenantFieldsUpdate(data));
+    }
+
+    // Hardened staffCredentials: rejects new plaintext password/pin writes while preserving legacy records for safe migration
+    function isValidStaffCredential(data, staffId, isCreate) {
+      return data.keys().hasAll([
+          'id', 'userId', 'phone', 'baseSalary',
+          'commissionPercent', 'hiredAt', 'storeId', 'ownerUid', 'adminUids',
+          'createdBy', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'userId', 'phone', 'password', 'pin', 'passwordHash', 'pinHash',
+          'hashAlgo', 'authMigrated', 'googleEmail', 'baseSalary',
+          'commissionPercent', 'hiredAt', 'storeId', 'ownerUid', 'adminUids',
+          'createdBy', 'createdAt', 'updatedAt'
+        ]) &&
+        data.id == staffId &&
+        data.userId is string && data.userId.size() <= 128 &&
+        data.phone is string && data.phone.size() <= 40 &&
+        (!isCreate || (!('password' in data) && !('pin' in data))) &&
+        (!('password' in data) || (data.password is string && data.password.size() <= 120)) &&
+        (!('pin' in data) || (data.pin is string && data.pin.size() <= 10)) &&
+        (!('passwordHash' in data) || (data.passwordHash is string && data.passwordHash.size() >= 16 && data.passwordHash.size() <= 256)) &&
+        (!('pinHash' in data) || (data.pinHash is string && data.pinHash.size() >= 16 && data.pinHash.size() <= 256)) &&
+        (!('hashAlgo' in data) || data.hashAlgo in ['sha256', 'pbkdf2-sha256', 'firebase-auth']) &&
+        (!('authMigrated' in data) || data.authMigrated is bool) &&
+        (!('googleEmail' in data) || (data.googleEmail is string && data.googleEmail.size() <= 200)) &&
+        data.baseSalary is number && data.baseSalary >= 0 &&
+        data.commissionPercent is number && data.commissionPercent >= 0 &&
+        data.hiredAt is string && data.hiredAt.size() <= 64 &&
+        hasValidStoreId(data) &&
+        (isCreate ? hasAdminTenantFields(data) : hasAdminTenantFieldsUpdate(data));
+    }
+
+    function isValidStaffInvite(data, inviteId, isCreate) {
+      return data.keys().hasAll([
+          'id', 'staffId', 'userId', 'roleId', 'assignedStoreIds',
+          'permissions', 'ownerUid', 'adminUids', 'createdBy',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'staffId', 'userId', 'roleId', 'assignedStoreIds',
+          'permissions', 'ownerUid', 'adminUids', 'createdBy',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.id == inviteId &&
+        data.staffId is string && data.staffId.size() >= 1 && data.staffId.size() <= 128 &&
+        data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+        data.roleId is string && data.roleId.size() >= 1 && data.roleId.size() <= 64 &&
+        data.assignedStoreIds is list && data.assignedStoreIds.size() <= 20 && (data.assignedStoreIds.size() == 0 || data.assignedStoreIds[0] is string) &&
+        data.permissions is list && data.permissions.size() <= 30 && (data.permissions.size() == 0 || data.permissions[0] is string) &&
+        (isCreate ? hasAdminTenantFields(data) : hasAdminTenantFieldsUpdate(data));
+    }
+
+    function isValidTarget(data, targetId, isCreate) {
+      return data.keys().hasAll([
+          'id', 'month', 'targetAmount', 'storeId', 'ownerUid', 'memberUids',
+          'createdBy', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'employeeId', 'month', 'targetAmount', 'storeId', 'ownerUid',
+          'memberUids', 'createdBy', 'createdAt', 'updatedAt'
+        ]) &&
+        data.id == targetId &&
+        (!('employeeId' in data) || (data.employeeId is string && data.employeeId.size() <= 128)) &&
+        data.month is string && data.month.size() <= 16 &&
+        data.targetAmount is number && data.targetAmount >= 0 &&
+        hasValidStoreId(data) &&
+        (isCreate ? hasTenantFields(data) : hasTenantFieldsUpdate(data));
+    }
+
+    function isValidOnlineOrder(data, orderId, isCreate) {
+      return data.keys().hasAll([
+          'id', 'orderNumber', 'customerName', 'customerPhone', 'deliveryAddress',
+          'deliveryMethod', 'paymentMethod', 'items', 'totalAmount', 'status',
+          'storeId', 'ownerUid', 'memberUids', 'createdBy', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'orderNumber', 'customerName', 'customerPhone', 'deliveryAddress',
+          'deliveryMethod', 'paymentMethod', 'items', 'totalAmount', 'status',
+          'note', 'storeId', 'ownerUid', 'memberUids', 'createdBy',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.id == orderId &&
+        data.orderNumber is string && data.orderNumber.size() <= 64 &&
+        data.customerName is string && data.customerName.size() >= 1 && data.customerName.size() <= 120 &&
+        data.customerPhone is string && data.customerPhone.size() <= 40 &&
+        data.deliveryAddress is string && data.deliveryAddress.size() <= 300 &&
+        data.deliveryMethod in ['delivery', 'pickup'] &&
+        data.paymentMethod in ['cash_on_delivery', 'online_placeholder'] &&
+        data.items is list && data.items.size() >= 1 && data.items.size() <= 100 && data.items[0] is map &&
+        data.totalAmount is number && data.totalAmount >= 0 &&
+        data.status in ['new', 'confirmed', 'delivered', 'canceled'] &&
+        (!('note' in data) || (data.note is string && data.note.size() <= 500)) &&
+        hasValidStoreId(data) &&
+        (isCreate ? hasTenantFields(data) : hasTenantFieldsUpdate(data));
+    }
+
+    function isValidAuditLog(data, auditId, isCreate) {
+      return data.keys().hasAll([
+          'id', 'userId', 'userName', 'action', 'entityType', 'entityId',
+          'details', 'storeId', 'ownerUid', 'memberUids', 'createdBy',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'userId', 'userName', 'action', 'entityType', 'entityId',
+          'details', 'storeId', 'ownerUid', 'memberUids', 'createdBy',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.id == auditId &&
+        data.userId is string && data.userId.size() <= 128 &&
+        data.userName is string && data.userName.size() <= 120 &&
+        data.action is string && data.action.size() <= 80 &&
+        data.entityType is string && data.entityType.size() <= 64 &&
+        data.entityId is string && data.entityId.size() <= 128 &&
+        data.details is string && data.details.size() <= 500 &&
+        hasValidStoreId(data) &&
+        (isCreate ? hasTenantFields(data) : hasTenantFieldsUpdate(data));
+    }
+
+    function isValidSyncedOp(data, opId, isCreate) {
+      return data.keys().hasAll([
+          'id', 'opType', 'actorUid', 'storeId', 'ownerUid', 'memberUids',
+          'createdBy', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'opType', 'actorUid', 'storeId', 'ownerUid', 'memberUids',
+          'createdBy', 'createdAt', 'updatedAt'
+        ]) &&
+        data.id == opId &&
+        data.opType is string && data.opType.size() <= 80 &&
+        data.actorUid == request.auth.uid &&
+        hasValidStoreId(data) &&
+        (isCreate ? hasTenantFields(data) : hasTenantFieldsUpdate(data));
+    }
+
+    // 4. Root Connection & Admin Collections
+    match /test/{docId} {
+      allow get: if isSignedIn() && isValidId(docId);
+      allow list, create, update, delete: if false;
+    }
+
+    match /admins/{userId} {
+      allow get: if isVerified() && (request.auth.uid == userId || isPlatformAdmin());
+      allow list: if isVerified() && (isPlatformAdmin() || resource.data.id == request.auth.uid);
+      allow create: if isVerified() && isValidId(userId) &&
+        isValidAdminRecord(incoming(), userId) && (
+          isBootstrappedAdmin() || isPlatformAdmin()
+        );
+      allow update, delete: if false;
+    }
+
+    // 5. User Profiles (Split PII Collection Pattern)
+    match /userProfiles/{userId} {
+      allow get: if isVerified() && isValidId(userId) && (request.auth.uid == userId || isPlatformAdmin());
+      allow list: if isVerified() && (isPlatformAdmin() || resource.data.id == request.auth.uid);
+      allow create: if isVerified() && isValidId(userId) &&
+        request.auth.uid == userId &&
+        isValidUserProfileCreate(incoming(), userId);
+      allow update: if isVerified() && isValidId(userId) &&
+        isValidUserProfileUpdate(incoming(), userId) &&
+        request.auth.uid == userId && (
+          incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'activeWorkspaceId', 'workspaceIds', 'updatedAt'])
+        );
+      allow delete: if false;
+
+      match /private/{docId} {
+        allow get: if isVerified() && isValidId(userId) && isValidId(docId) && (request.auth.uid == userId || isPlatformAdmin());
+        allow list: if isVerified() && (request.auth.uid == userId || isPlatformAdmin());
+        allow create: if isVerified() && isValidId(userId) && isValidId(docId) &&
+          request.auth.uid == userId &&
+          isValidUserPrivateInfo(incoming(), userId);
+        allow update: if isVerified() && isValidId(userId) && isValidId(docId) &&
+          isValidUserPrivateInfo(incoming(), userId) &&
+          request.auth.uid == userId &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['email', 'updatedAt']);
+        allow delete: if false;
+      }
+    }
+
+    // 6. Workspace Root & Subcollections
+    match /workspaces/{workspaceId} {
+      allow get: if isVerified() && isValidId(workspaceId) && (
+        isPlatformAdmin() ||
+        existing().ownerUid == request.auth.uid ||
+        request.auth.uid in existing().memberUids ||
+        request.auth.uid in existing().adminUids ||
+        isInvitedEmail(existing().invitedEmails)
+      );
+      allow list: if isVerified() && (
+        isPlatformAdmin() ||
+        resource.data.ownerUid == request.auth.uid ||
+        request.auth.uid in resource.data.memberUids ||
+        request.auth.uid in resource.data.adminUids ||
+        isInvitedEmail(resource.data.invitedEmails)
+      );
+      allow create: if isVerified() && isValidId(workspaceId) &&
+        isValidWorkspaceCreate(incoming(), workspaceId);
+      allow update: if isVerified() && isValidId(workspaceId) &&
+        isValidWorkspaceUpdate(incoming(), workspaceId) && (
+          // Action: Admin updates settings, roles, or invited staff
+          (
+            isWsAdmin(workspaceId) &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'name', 'memberUids', 'adminUids', 'invitedEmails', 'roles', 'settings', 'version', 'updatedAt'
+            ])
+          ) ||
+          // Action: Invited employee claims seat by appending own UID
+          (
+            isInvitedEmail(existing().invitedEmails) &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['memberUids', 'updatedAt']) &&
+            incoming().memberUids.hasAll(existing().memberUids) &&
+            incoming().memberUids.size() <= existing().memberUids.size() + 1 &&
+            request.auth.uid in incoming().memberUids
+          )
+        );
+      allow delete: if isVerified() && isValidId(workspaceId) && (
+        existing().ownerUid == request.auth.uid || isPlatformAdmin()
+      );
+
+      // 6a. Workspace Membership (RBAC Source of Truth)
+      match /members/{memberUid} {
+        allow get: if isVerified() && isValidId(workspaceId) && isValidId(memberUid) && (
+          isPlatformAdmin() ||
+          isWsAdminRead(workspaceId) ||
+          (isWsMemberRead(workspaceId) && request.auth.uid == memberUid)
+        );
+        allow list: if isVerified() && isValidId(workspaceId) && (
+          isPlatformAdmin() ||
+          isWsAdminRead(workspaceId)
+        );
+        allow create: if isVerified() && isValidId(workspaceId) && isValidId(memberUid) &&
+          isValidWorkspaceMemberBase(incoming(), memberUid) &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          incoming().ownerUid == wsDoc(workspaceId).data.ownerUid &&
+          memberUid in incoming().memberUids && (
+            // Workspace owner bootstrapping own membership or admin adding team member
+            (
+              memberUid == request.auth.uid &&
+              wsDoc(workspaceId).data.ownerUid == request.auth.uid
+            ) ||
+            isWsAdmin(workspaceId) ||
+            // Invited employee self-registering using verified admin-issued staffInvites binding
+            (
+              memberUid == request.auth.uid &&
+              isInvitedEmail(wsDoc(workspaceId).data.invitedEmails) &&
+              (
+                (
+                  exists(/databases/$(database)/documents/workspaces/$(workspaceId)/staffInvites/$(authEmailSha256())) &&
+                  incoming().staffId == get(/databases/$(database)/documents/workspaces/$(workspaceId)/staffInvites/$(authEmailSha256())).data.staffId &&
+                  incoming().roleId == get(/databases/$(database)/documents/workspaces/$(workspaceId)/staffInvites/$(authEmailSha256())).data.roleId &&
+                  incoming().roleId != 'owner' &&
+                  incoming().assignedStoreIds == get(/databases/$(database)/documents/workspaces/$(workspaceId)/staffInvites/$(authEmailSha256())).data.assignedStoreIds &&
+                  incoming().permissions == get(/databases/$(database)/documents/workspaces/$(workspaceId)/staffInvites/$(authEmailSha256())).data.permissions &&
+                  incoming().isActive == true
+                ) ||
+                (
+                  !exists(/databases/$(database)/documents/workspaces/$(workspaceId)/staffInvites/$(authEmailSha256())) &&
+                  incoming().roleId == 'cashier' &&
+                  incoming().assignedStoreIds.size() >= 1 &&
+                  incoming().permissions.hasOnly(['sell', 'view_catalog', 'view_customers', 'manage_customers']) &&
+                  incoming().isActive == true
+                )
+              )
+            )
+          );
+        allow update: if isVerified() && isValidId(workspaceId) && isValidId(memberUid) &&
+          isValidWorkspaceMemberBase(incoming(), memberUid) &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          incoming().ownerUid == existing().ownerUid &&
+          isWsAdmin(workspaceId) && (
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'staffId', 'displayName', 'roleId', 'assignedStoreIds', 'permissions', 'isActive', 'memberUids', 'updatedAt'
+            ])
+          );
+        allow delete: if isVerified() && isValidId(workspaceId) && isValidId(memberUid) &&
+          isWsAdmin(workspaceId) && memberUid != wsDoc(workspaceId).data.ownerUid;
+      }
+
+      // 6b. Admin-Only Integration Secrets
+      match /privateSettings/{docId} {
+        allow get: if isVerified() && isValidId(workspaceId) && isValidId(docId) && isWsAdminRead(workspaceId);
+        allow list: if canReadAdminRow(workspaceId, resource.data);
+        allow create: if isVerified() && isValidId(workspaceId) && isValidId(docId) &&
+          isWsAdmin(workspaceId) &&
+          isValidPrivateSettingsBase(incoming(), docId) &&
+          hasAdminTenantFieldsForWs(incoming(), workspaceId);
+        allow update: if isVerified() && isValidId(workspaceId) && isValidId(docId) &&
+          isValidPrivateSettingsBase(incoming(), docId) &&
+          isWsAdmin(workspaceId) &&
+          hasAdminTenantFieldsUpdate(incoming()) && (
+            incoming().diff(existing()).affectedKeys().hasOnly(['integrations', 'adminUids', 'updatedAt'])
+          );
+        allow delete: if isVerified() && isValidId(workspaceId) && isValidId(docId) && isWsAdmin(workspaceId);
+      }
+
+      // 6c. Stores & Warehouses (Shared Workspace Reference Data)
+      match /stores/{storeId} {
+        allow get: if isVerified() && isValidId(workspaceId) && isValidId(storeId) && isWsMemberRead(workspaceId);
+        allow list: if canReadRow(resource.data);
+        allow create: if isVerified() && isValidId(workspaceId) && isValidId(storeId) &&
+          isValidStore(incoming(), storeId, true) &&
+          incoming().ownerUid == wsDoc(workspaceId).data.ownerUid &&
+          isWsAdmin(workspaceId);
+        allow update: if isVerified() && isValidId(workspaceId) && isValidId(storeId) &&
+          isValidStore(incoming(), storeId, false) && isWsAdmin(workspaceId) && (
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'name', 'address', 'phone', 'isActive', 'defaultWarehouseId', 'storeCode', 'color', 'memberUids', 'updatedAt'
+            ])
+          );
+        allow delete: if isVerified() && isValidId(workspaceId) && isValidId(storeId) && isWsAdmin(workspaceId);
+      }
+
+      match /warehouses/{warehouseId} {
+        allow get: if isVerified() && isValidId(workspaceId) && isValidId(warehouseId) && isWsMemberRead(workspaceId);
+        allow list: if canReadRow(resource.data);
+        allow create: if isVerified() && isValidId(workspaceId) && isValidId(warehouseId) &&
+          isValidWarehouse(incoming(), warehouseId, true) &&
+          incoming().ownerUid == wsDoc(workspaceId).data.ownerUid &&
+          isWsAdmin(workspaceId);
+        allow update: if isVerified() && isValidId(workspaceId) && isValidId(warehouseId) &&
+          isValidWarehouse(incoming(), warehouseId, false) && isWsAdmin(workspaceId) && (
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'name', 'address', 'isMain', 'storeId', 'memberUids', 'updatedAt'
+            ])
+          );
+        allow delete: if isVerified() && isValidId(workspaceId) && isValidId(warehouseId) && isWsAdmin(workspaceId);
+      }
+
+      // 6d. Catalog (Categories, Brands: Workspace Reference; Products: Strict Branch-Isolated)
+      match /categories/{categoryId} {
+        allow get: if isVerified() && isValidId(workspaceId) && isValidId(categoryId) && isWsMemberRead(workspaceId);
+        allow list: if canReadRow(resource.data);
+        allow create: if isVerified() && isValidId(workspaceId) && isValidId(categoryId) &&
+          isValidCategory(incoming(), categoryId, true) &&
+          incoming().ownerUid == wsDoc(workspaceId).data.ownerUid &&
+          isWsMember(workspaceId) &&
+          canMemberStore(workspaceId, incoming().storeId) && (
+            hasMemberPerm(workspaceId, 'manage_products') ||
+            hasMemberPerm(workspaceId, 'manage_stock')
+          );
+        allow update: if isVerified() && isValidId(workspaceId) && isValidId(categoryId) &&
+          isValidCategory(incoming(), categoryId, false) &&
+          isWsMember(workspaceId) &&
+          canMemberStore(workspaceId, existing().storeId) && (
+            (
+              (hasMemberPerm(workspaceId, 'manage_products') || hasMemberPerm(workspaceId, 'manage_stock')) &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['nameUz', 'nameRu', 'parentId', 'sortOrder', 'memberUids', 'updatedAt'])
+            ) || isWsAdmin(workspaceId)
+          );
+        allow delete: if isVerified() && isValidId(workspaceId) && isValidId(categoryId) &&
+          isWsMember(workspaceId) && (
+            (
+              canMemberStore(workspaceId, existing().storeId) &&
+              (hasMemberPerm(workspaceId, 'manage_products') || hasMemberPerm(workspaceId, 'manage_stock'))
+            ) ||
+            isWsAdmin(workspaceId)
+          );
+      }
+
+      match /brands/{brandId} {
+        allow get: if isVerified() && isValidId(workspaceId) && isValidId(brandId) && isWsMemberRead(workspaceId);
+        allow list: if canReadRow(resource.data);
+        allow create: if isVerified() && isValidId(workspaceId) && isValidId(brandId) &&
+          isValidBrand(incoming(), brandId, true) &&
+          incoming().ownerUid == wsDoc(workspaceId).data.ownerUid &&
+          isWsMember(workspaceId) &&
+          canMemberStore(workspaceId, incoming().storeId) &&
+          hasMemberPerm(workspaceId, 'manage_products');
+        allow update: if isVerified() && isValidId(workspaceId) && isValidId(brandId) &&
+          isValidBrand(incoming(), brandId, false) &&
+          isWsMember(workspaceId) &&
+          canMemberStore(workspaceId, existing().storeId) &&
+          hasMemberPerm(workspaceId, 'manage_products') && (
+            incoming().diff(existing()).affectedKeys().hasOnly(['name', 'country', 'memberUids', 'updatedAt'])
+          );
+        allow delete: if isVerified() && isValidId(workspaceId) && isValidId(brandId) && isWsAdmin(workspaceId);
+      }
+
+      match /products/{productId} {
+        allow get: if canGetStoreDoc(workspaceId, productId);
+        allow list: if canReadStoreRow(workspaceId, resource.data);
+        allow create: if isVerified() && isValidId(workspaceId) && isValidId(productId) &&
+          isValidProduct(incoming(), productId, true) &&
+          incoming().ownerUid == wsDoc(workspaceId).data.ownerUid &&
+          isWsMember(workspaceId) &&
+          canMemberStore(workspaceId, incoming().storeId) && (
+            hasMemberPerm(workspaceId, 'manage_products') ||
+            hasMemberPerm(workspaceId, 'manage_stock')
+          );
+        allow update: if isVerified() && isValidId(workspaceId) && isValidId(productId) &&
+          isValidProduct(incoming(), productId, false) &&
+          isWsMember(workspaceId) &&
+          canMemberStore(workspaceId, existing().storeId) && (
+            (
+              (hasMemberPerm(workspaceId, 'manage_products') || hasMemberPerm(workspaceId, 'manage_stock')) &&
+              incoming().diff(existing()).affectedKeys().hasOnly([
+                'name', 'categoryId', 'brandId', 'collection', 'unit', 'description',
+                'photoUrl', 'supplierId', 'tags', 'isPublishedOnline', 'variants', 'memberUids', 'updatedAt'
+              ])
+            ) || isWsAdmin(workspaceId)
+          );
+        allow delete: if isVerified() && isValidId(workspaceId) && isValidId(productId) &&
+          isWsMember(workspaceId) && (
+            (canMemberStore(workspaceId, existing().storeId) && hasMemberPerm(workspaceId, 'manage_products')) ||
+            isWsAdmin(workspaceId)
+          );
+      }
+
+      // 6e. Suppliers & Inventory Operations
+      match /suppliers/{supplierId} {
+        allow get: if canGetStoreDoc(workspaceId, supplierId);
+        allow list: if canReadStoreRow(workspaceId, resource.data);
+        allow create: if isVerified() && isValidId(workspaceId) && isValidId(supplierId) &&
+          isValidSupplier(incoming(), supplierId, true) &&
+          incoming().ownerUid == wsDoc(workspaceId).data.ownerUid &&
+          isWsMember(workspaceId) &&
+          canMemberStore(workspaceId, incoming().storeId) &&
+          hasMemberPerm(workspaceId, 'manage_stock');
+        allow update: if isVerified() && isValidId(workspaceId) && isValidId(supplierId) &&
+          isValidSupplier(incoming(), supplierId, false) &&
+          isWsMember(workspaceId) &&
+          canMemberStore(workspaceId, existing().storeId) && (
+            (
+              (hasMemberPerm(workspaceId, 'manage_stock') || hasMemberPerm(workspaceId, 'manage_finance')) &&
+              incoming().diff(existing()).affectedKeys().hasOnly([
+                'name', 'contactName', 'phone', 'address', 'notes', 'debtBalance', 'memberUids', 'updatedAt'
+              ])
+            ) || isWsAdmin(workspaceId)
+          );
+        allow delete: if isVerified() && isValidId(workspaceId) && isValidId(supplierId) && isWsAdmin(workspaceId);
+      }
+
+      match /stockItems/{stockItemId} {
+        allow get: if canGetStoreDoc(workspaceId, stockItemId);
+        allow list: if canReadStoreRow(workspaceId, resource.data);
+        allow create: if isVerified() && isValidId(workspaceId) && isValidId(stockItemId) &&
+          isValidStockItem(incoming(), stockItemId, true) &&
+          incoming().ownerUid == wsDoc(workspaceId).data.ownerUid &&
+          isWsMember(workspaceId) &&
+          canMemberStore(workspaceId, incoming().storeId) && (
+            hasMemberPerm(workspaceId, 'manage_stock') ||
+            hasMemberPerm(workspaceId, 'sell') ||
+            hasMemberPerm(workspaceId, 'manage_products')
+          );
+        allow update: if isVerified() && isValidId(workspaceId) && isValidId(stockItemId) &&
+          isValidStockItem(incoming(), stockItemId, false) &&
+          isWsMember(workspaceId) &&
+          canMemberStore(workspaceId, existing().storeId) && (
+            (
+              (hasMemberPerm(workspaceId, 'manage_stock') || hasMemberPerm(workspaceId, 'sell') || hasMemberPerm(workspaceId, 'refund')) &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['qty', 'updatedAt'])
+            ) || isWsAdmin(workspaceId)
+          );
+        allow delete: if isVerified() && isValidId(workspaceId) && isValidId(stockItemId) &&
+          isWsMember(workspaceId) && (
+            (canMemberStore(workspaceId, existing().storeId) && hasMemberPerm(workspaceId, 'manage_products')) ||
+            isWsAdmin(workspaceId)
+          );
+      }
+
+      match /stockMovements/{movementId} {
+        allow get: if canGetStoreDoc(workspaceId, movementId);
+        allow list: if canReadStoreRow(workspaceId, resource.data);
+        allow create: if isVerified() && isValidId(workspaceId) && isValidId(movementId) &&
+          isValidStockMovement(incoming(), movementId, true) &&
+          incoming().ownerUid == wsDoc(workspaceId).data.ownerUid &&
+          isWsMember(workspaceId) &&
+          canMemberStore(workspaceId, incoming().storeId) && (
+            hasMemberPerm(workspaceId, 'manage_stock') ||
+            hasMemberPerm(workspaceId, 'sell') ||
+            hasMemberPerm(workspaceId, 'refund')
+          );
+        allow update: if isVerified() && isValidId(workspaceId) && isValidId(movementId) &&
+          isValidStockMovement(incoming(), movementId, false) &&
+          isWsAdmin(workspaceId) &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['memberUids', 'updatedAt']);
+        allow delete: if isVerified() && isValidId(workspaceId) && isValidId(movementId) && isWsAdmin(workspaceId);
+      }
+
+      match /purchaseReceipts/{receiptId} {
+        allow get: if canGetStoreDoc(workspaceId, receiptId);
+        allow list: if canReadStoreRow(workspaceId, resource.data);
+        allow create: if isVerified() && isValidId(workspaceId) && isValidId(receiptId) &&
+          isValidPurchaseReceipt(incoming(), receiptId, true) &&
+          incoming().ownerUid == wsDoc(workspaceId).data.ownerUid &&
+          isWsMember(workspaceId) &&
+          canMemberStore(workspaceId, incoming().storeId) &&
+          hasMemberPerm(workspaceId, 'manage_stock');
+        allow update: if isVerified() && isValidId(workspaceId) && isValidId(receiptId) &&
+          isValidPurchaseReceipt(incoming(), receiptId, false) &&
+          isWsMember(workspaceId) &&
+          canMemberStore(workspaceId, existing().storeId) && (
+            (
+              existing().paymentStatus != 'paid' &&
+              (hasMemberPerm(workspaceId, 'manage_stock') || hasMemberPerm(workspaceId, 'manage_finance')) &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['paidAmount', 'paymentStatus', 'note', 'updatedAt'])
+            ) || isWsAdmin(workspaceId)
+          );
+        allow delete: if isVerified() && isValidId(workspaceId) && isValidId(receiptId) && isWsAdmin(workspaceId);
+      }
+
+      match /purchaseOrders/{poId} {
+        allow get: if canGetStoreDoc(workspaceId, poId);
+        allow list: if canReadStoreRow(workspaceId, resource.data);
+        allow create: if isVerified() && isValidId(workspaceId) && isValidId(poId) &&
+          isValidPurchaseOrder(incoming(), poId, true) &&
+          incoming().ownerUid == wsDoc(workspaceId).data.ownerUid &&
+          isWsMember(workspaceId) &&
+          canMemberStore(workspaceId, incoming().storeId) &&
+          hasMemberPerm(workspaceId, 'manage_stock');
+        allow update: if isVerified() && isValidId(workspaceId) && isValidId(poId) &&
+          isValidPurchaseOrder(incoming(), poId, false) &&
+          isWsMember(workspaceId) &&
+          canMemberStore(workspaceId, existing().storeId) && (
+            (
+              existing().status in ['draft', 'ordered'] &&
+              hasMemberPerm(workspaceId, 'manage_stock') &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['status', 'items', 'totalAmount', 'expectedDate', 'note', 'updatedAt'])
+            ) || isWsAdmin(workspaceId)
+          );
+        allow delete: if isVerified() && isValidId(workspaceId) && isValidId(poId) && isWsAdmin(workspaceId);
+      }
+
+      match /transfers/{transferId} {
+        allow get: if canGetStoreDoc(workspaceId, transferId);
+        allow list: if canReadStoreRow(workspaceId, resource.data);
+        allow create: if isVerified() && isValidId(workspaceId) && isValidId(transferId) &&
+          isValidTransfer(incoming(), transferId, true) &&
+          incoming().ownerUid == wsDoc(workspaceId).data.ownerUid &&
+          isWsMember(workspaceId) &&
+          canMemberStore(workspaceId, incoming().storeId) &&
+          hasMemberPerm(workspaceId, 'manage_stock');
+        allow update: if isVerified() && isValidId(workspaceId) && isValidId(transferId) &&
+          isValidTransfer(incoming(), transferId, false) &&
+          isWsMember(workspaceId) &&
+          canMemberStore(workspaceId, existing().storeId) && (
+            (
+              existing().status == 'sent' &&
+              hasMemberPerm(workspaceId, 'manage_stock') &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['status', 'items', 'note', 'updatedAt'])
+            ) || isWsAdmin(workspaceId)
+          );
+        allow delete: if isVerified() && isValidId(workspaceId) && isValidId(transferId) && isWsAdmin(workspaceId);
+      }
+
+      match /writeOffs/{writeOffId} {
+        allow get: if canGetStoreDoc(workspaceId, writeOffId);
+        allow list: if canReadStoreRow(workspaceId, resource.data);
+        allow create: if isVerified() && isValidId(workspaceId) && isValidId(writeOffId) &&
+          isValidWriteOff(incoming(), writeOffId, true) &&
+          incoming().ownerUid == wsDoc(workspaceId).data.ownerUid &&
+          isWsMember(workspaceId) &&
+          canMemberStore(workspaceId, incoming().storeId) &&
+          hasMemberPerm(workspaceId, 'manage_stock');
+        allow update: if isVerified() && isValidId(workspaceId) && isValidId(writeOffId) &&
+          isValidWriteOff(incoming(), writeOffId, false) &&
+          isWsAdmin(workspaceId) &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['memberUids', 'updatedAt']);
+        allow delete: if isVerified() && isValidId(workspaceId) && isValidId(writeOffId) && isWsAdmin(workspaceId);
+      }
+
+      match /stocktakes/{stocktakeId} {
+        allow get: if canGetStoreDoc(workspaceId, stocktakeId);
+        allow list: if canReadStoreRow(workspaceId, resource.data);
+        allow create: if isVerified() && isValidId(workspaceId) && isValidId(stocktakeId) &&
+          isValidStocktake(incoming(), stocktakeId, true) &&
+          incoming().ownerUid == wsDoc(workspaceId).data.ownerUid &&
+          isWsMember(workspaceId) &&
+          canMemberStore(workspaceId, incoming().storeId) &&
+          hasMemberPerm(workspaceId, 'manage_stock');
+        allow update: if isVerified() && isValidId(workspaceId) && isValidId(stocktakeId) &&
+          isValidStocktake(incoming(), stocktakeId, false) &&
+          isWsMember(workspaceId) &&
+          canMemberStore(workspaceId, existing().storeId) && (
+            (
+              existing().status == 'in_progress' &&
+              hasMemberPerm(workspaceId, 'manage_stock') &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['status', 'items', 'totalDiscrepancyValue', 'note', 'updatedAt'])
+            ) || isWsAdmin(workspaceId)
+          );
+        allow delete: if isVerified() && isValidId(workspaceId) && isValidId(stocktakeId) && isWsAdmin(workspaceId);
+      }
+
+      // 6f. POS Sales, Returns, Cash Shifts
+      match /sales/{saleId} {
+        allow get: if canGetStoreDoc(workspaceId, saleId);
+        allow list: if canReadStoreRow(workspaceId, resource.data);
+        allow create: if isVerified() && isValidId(workspaceId) && isValidId(saleId) &&
+          isValidSale(incoming(), saleId, true) &&
+          incoming().ownerUid == wsDoc(workspaceId).data.ownerUid &&
+          isWsMember(workspaceId) &&
+          canMemberStore(workspaceId, incoming().storeId) &&
+          hasMemberPerm(workspaceId, 'sell');
+        allow update: if isVerified() && isValidId(workspaceId) && isValidId(saleId) &&
+          isValidSale(incoming(), saleId, false) &&
+          isWsMember(workspaceId) &&
+          canMemberStore(workspaceId, existing().storeId) && (
+            // Action: Cashier settles deferred check
+            (
+              existing().status == 'deferred' &&
+              hasMemberPerm(workspaceId, 'sell') &&
+              incoming().diff(existing()).affectedKeys().hasOnly([
+                'status', 'payments', 'paidAmount', 'debtAmount', 'cashGiven', 'changeAmount',
+                'paidAt', 'customerId', 'customerName', 'loyaltyPointsSpent', 'loyaltyPointsEarned',
+                'totalAmount', 'vatAmount', 'shiftId', 'cashierId', 'cashierName', 'offlineCreated', 'syncedAt', 'updatedAt'
+              ])
+            ) ||
+            // Action: Authorized staff records sale return
+            (
+              existing().status in ['completed', 'partial_return'] &&
+              hasMemberPerm(workspaceId, 'refund') &&
+              incoming().status in ['returned', 'partial_return'] &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+            ) ||
+            isWsAdmin(workspaceId)
+          );
+        allow delete: if isVerified() && isValidId(workspaceId) && isValidId(saleId) && isWsMember(workspaceId) && (
+          (
+            existing().status == 'deferred' &&
+            hasMemberPerm(workspaceId, 'sell') &&
+            canMemberStore(workspaceId, existing().storeId)
+          ) || isWsAdmin(workspaceId)
+        );
+      }
+
+      match /returns/{returnId} {
+        allow get: if canGetStoreDoc(workspaceId, returnId);
+        allow list: if canReadStoreRow(workspaceId, resource.data);
+        allow create: if isVerified() && isValidId(workspaceId) && isValidId(returnId) &&
+          isValidReturnDoc(incoming(), returnId, true) &&
+          incoming().ownerUid == wsDoc(workspaceId).data.ownerUid &&
+          isWsMember(workspaceId) &&
+          canMemberStore(workspaceId, incoming().storeId) &&
+          hasMemberPerm(workspaceId, 'refund');
+        allow update: if isVerified() && isValidId(workspaceId) && isValidId(returnId) &&
+          isValidReturnDoc(incoming(), returnId, false) &&
+          isWsAdmin(workspaceId) &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['memberUids', 'updatedAt']);
+        allow delete: if isVerified() && isValidId(workspaceId) && isValidId(returnId) && isWsAdmin(workspaceId);
+      }
+
+      match /cashShifts/{shiftId} {
+        allow get: if canGetStoreDoc(workspaceId, shiftId);
+        allow list: if canReadStoreRow(workspaceId, resource.data);
+        allow create: if isVerified() && isValidId(workspaceId) && isValidId(shiftId) &&
+          isValidCashShift(incoming(), shiftId, true) &&
+          incoming().ownerUid == wsDoc(workspaceId).data.ownerUid &&
+          isWsMember(workspaceId) &&
+          canMemberStore(workspaceId, incoming().storeId) &&
+          hasMemberPerm(workspaceId, 'sell');
+        allow update: if isVerified() && isValidId(workspaceId) && isValidId(shiftId) &&
+          isValidCashShift(incoming(), shiftId, false) &&
+          isWsMember(workspaceId) &&
+          canMemberStore(workspaceId, existing().storeId) && (
+            (
+              existing().status == 'open' &&
+              (hasMemberPerm(workspaceId, 'sell') || hasMemberPerm(workspaceId, 'refund')) &&
+              incoming().diff(existing()).affectedKeys().hasOnly([
+                'closedAt', 'cashSalesTotal', 'cardSalesTotal', 'otherSalesTotal',
+                'cashRefundsTotal', 'cashInTotal', 'cashOutTotal', 'expectedCash',
+                'actualCash', 'discrepancy', 'status', 'notes', 'updatedAt'
+              ])
+            ) || isWsAdmin(workspaceId)
+          );
+        allow delete: if isVerified() && isValidId(workspaceId) && isValidId(shiftId) && isWsAdmin(workspaceId);
+      }
+
+      match /cashOperations/{opId} {
+        allow get: if canGetStoreDoc(workspaceId, opId);
+        allow list: if canReadStoreRow(workspaceId, resource.data);
+        allow create: if isVerified() && isValidId(workspaceId) && isValidId(opId) &&
+          isValidCashOperation(incoming(), opId, true) &&
+          incoming().ownerUid == wsDoc(workspaceId).data.ownerUid &&
+          isWsMember(workspaceId) &&
+          canMemberStore(workspaceId, incoming().storeId) &&
+          hasMemberPerm(workspaceId, 'sell');
+        allow update: if isVerified() && isValidId(workspaceId) && isValidId(opId) &&
+          isValidCashOperation(incoming(), opId, false) &&
+          isWsAdmin(workspaceId) &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['memberUids', 'updatedAt']);
+        allow delete: if isVerified() && isValidId(workspaceId) && isValidId(opId) && isWsAdmin(workspaceId);
+      }
+
+      // 6g. Finance
+      match /accounts/{accountId} {
+        allow get: if canGetStoreDoc(workspaceId, accountId);
+        allow list: if canReadStoreRow(workspaceId, resource.data);
+        allow create: if isVerified() && isValidId(workspaceId) && isValidId(accountId) &&
+          isValidAccount(incoming(), accountId, true) &&
+          incoming().ownerUid == wsDoc(workspaceId).data.ownerUid &&
+          isWsMember(workspaceId) &&
+          canMemberStore(workspaceId, incoming().storeId) &&
+          hasMemberPerm(workspaceId, 'manage_finance');
+        allow update: if isVerified() && isValidId(workspaceId) && isValidId(accountId) &&
+          isValidAccount(incoming(), accountId, false) &&
+          isWsMember(workspaceId) &&
+          canMemberStore(workspaceId, existing().storeId) && (
+            (
+              (hasMemberPerm(workspaceId, 'manage_finance') || hasMemberPerm(workspaceId, 'sell') || hasMemberPerm(workspaceId, 'refund') || hasMemberPerm(workspaceId, 'manage_stock')) &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['balance', 'name', 'type', 'isDefault', 'updatedAt'])
+            ) || isWsAdmin(workspaceId)
+          );
+        allow delete: if isVerified() && isValidId(workspaceId) && isValidId(accountId) && isWsAdmin(workspaceId);
+      }
+
+      match /transactions/{trxId} {
+        allow get: if canGetStoreDoc(workspaceId, trxId);
+        allow list: if canReadStoreRow(workspaceId, resource.data);
+        allow create: if isVerified() && isValidId(workspaceId) && isValidId(trxId) &&
+          isValidFinanceTransaction(incoming(), trxId, true) &&
+          incoming().ownerUid == wsDoc(workspaceId).data.ownerUid &&
+          isWsMember(workspaceId) &&
+          canMemberStore(workspaceId, incoming().storeId) && (
+            hasMemberPerm(workspaceId, 'manage_finance') ||
+            hasMemberPerm(workspaceId, 'sell') ||
+            hasMemberPerm(workspaceId, 'refund') ||
+            hasMemberPerm(workspaceId, 'manage_stock')
+          );
+        allow update: if isVerified() && isValidId(workspaceId) && isValidId(trxId) &&
+          isValidFinanceTransaction(incoming(), trxId, false) &&
+          isWsAdmin(workspaceId) &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['memberUids', 'updatedAt']);
+        allow delete: if isVerified() && isValidId(workspaceId) && isValidId(trxId) && isWsAdmin(workspaceId);
+      }
+
+      match /expenses/{expId} {
+        allow get: if canGetStoreDoc(workspaceId, expId);
+        allow list: if canReadStoreRow(workspaceId, resource.data);
+        allow create: if isVerified() && isValidId(workspaceId) && isValidId(expId) &&
+          isValidExpense(incoming(), expId, true) &&
+          incoming().ownerUid == wsDoc(workspaceId).data.ownerUid &&
+          isWsMember(workspaceId) &&
+          canMemberStore(workspaceId, incoming().storeId) &&
+          hasMemberPerm(workspaceId, 'manage_finance');
+        allow update: if isVerified() && isValidId(workspaceId) && isValidId(expId) &&
+          isValidExpense(incoming(), expId, false) &&
+          isWsAdmin(workspaceId) &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'accountId', 'category', 'amount', 'description', 'isRecurring', 'recurringDay', 'date', 'memberUids', 'updatedAt'
+          ]);
+        allow delete: if isVerified() && isValidId(workspaceId) && isValidId(expId) && isWsAdmin(workspaceId);
+      }
+
+      // 6h. CRM, Loyalty, Debts, Promos
+      match /customers/{customerId} {
+        allow get: if canGetStoreDoc(workspaceId, customerId);
+        allow list: if canReadStoreRow(workspaceId, resource.data);
+        allow create: if isVerified() && isValidId(workspaceId) && isValidId(customerId) &&
+          isValidCustomer(incoming(), customerId, true) &&
+          incoming().ownerUid == wsDoc(workspaceId).data.ownerUid &&
+          isWsMember(workspaceId) &&
+          canMemberStore(workspaceId, incoming().storeId) && (
+            hasMemberPerm(workspaceId, 'manage_customers') ||
+            hasMemberPerm(workspaceId, 'sell')
+          );
+        allow update: if isVerified() && isValidId(workspaceId) && isValidId(customerId) &&
+          isValidCustomer(incoming(), customerId, false) &&
+          isWsMember(workspaceId) &&
+          canMemberStore(workspaceId, existing().storeId) && (
+            (
+              (hasMemberPerm(workspaceId, 'manage_customers') || hasMemberPerm(workspaceId, 'sell') || hasMemberPerm(workspaceId, 'manage_finance')) &&
+              incoming().diff(existing()).affectedKeys().hasOnly([
+                'name', 'phone', 'birthday', 'gender', 'notes', 'tags', 'segment',
+                'totalSpent', 'ordersCount', 'lastPurchaseAt', 'debtBalance', 'updatedAt'
+              ])
+            ) || isWsAdmin(workspaceId)
+          );
+        allow delete: if isVerified() && isValidId(workspaceId) && isValidId(customerId) && isWsAdmin(workspaceId);
+      }
+
+      match /loyaltyAccounts/{loyId} {
+        allow get: if canGetStoreDoc(workspaceId, loyId);
+        allow list: if canReadStoreRow(workspaceId, resource.data);
+        allow create: if isVerified() && isValidId(workspaceId) && isValidId(loyId) &&
+          isValidLoyaltyAccount(incoming(), loyId, true) &&
+          incoming().ownerUid == wsDoc(workspaceId).data.ownerUid &&
+          isWsMember(workspaceId) &&
+          canMemberStore(workspaceId, incoming().storeId) &&
+          (hasMemberPerm(workspaceId, 'manage_customers') || hasMemberPerm(workspaceId, 'sell'));
+        allow update: if isVerified() && isValidId(workspaceId) && isValidId(loyId) &&
+          isValidLoyaltyAccount(incoming(), loyId, false) &&
+          isWsMember(workspaceId) &&
+          canMemberStore(workspaceId, existing().storeId) && (
+            (
+              (hasMemberPerm(workspaceId, 'manage_customers') || hasMemberPerm(workspaceId, 'sell')) &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['tier', 'cashbackPercent', 'pointsBalance', 'expiresAt', 'updatedAt'])
+            ) || isWsAdmin(workspaceId)
+          );
+        allow delete: if isVerified() && isValidId(workspaceId) && isValidId(loyId) && isWsAdmin(workspaceId);
+      }
+
+      match /loyaltyTransactions/{ltxId} {
+        allow get: if canGetStoreDoc(workspaceId, ltxId);
+        allow list: if canReadStoreRow(workspaceId, resource.data);
+        allow create: if isVerified() && isValidId(workspaceId) && isValidId(ltxId) &&
+          isValidLoyaltyTransaction(incoming(), ltxId, true) &&
+          incoming().ownerUid == wsDoc(workspaceId).data.ownerUid &&
+          isWsMember(workspaceId) &&
+          canMemberStore(workspaceId, incoming().storeId) &&
+          (hasMemberPerm(workspaceId, 'manage_customers') || hasMemberPerm(workspaceId, 'sell'));
+        allow update: if isVerified() && isValidId(workspaceId) && isValidId(ltxId) &&
+          isValidLoyaltyTransaction(incoming(), ltxId, false) &&
+          isWsAdmin(workspaceId) &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['memberUids', 'updatedAt']);
+        allow delete: if isVerified() && isValidId(workspaceId) && isValidId(ltxId) && isWsAdmin(workspaceId);
+      }
+
+      match /debts/{debtId} {
+        allow get: if canGetStoreDoc(workspaceId, debtId);
+        allow list: if canReadStoreRow(workspaceId, resource.data);
+        allow create: if isVerified() && isValidId(workspaceId) && isValidId(debtId) &&
+          isValidDebt(incoming(), debtId, true) &&
+          incoming().ownerUid == wsDoc(workspaceId).data.ownerUid &&
+          isWsMember(workspaceId) &&
+          canMemberStore(workspaceId, incoming().storeId) &&
+          (hasMemberPerm(workspaceId, 'sell') || hasMemberPerm(workspaceId, 'manage_customers') || hasMemberPerm(workspaceId, 'manage_finance'));
+        allow update: if isVerified() && isValidId(workspaceId) && isValidId(debtId) &&
+          isValidDebt(incoming(), debtId, false) &&
+          isWsMember(workspaceId) &&
+          canMemberStore(workspaceId, existing().storeId) && (
+            (
+              existing().status != 'paid' &&
+              (hasMemberPerm(workspaceId, 'sell') || hasMemberPerm(workspaceId, 'manage_customers') || hasMemberPerm(workspaceId, 'manage_finance')) &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['remainingAmount', 'status', 'payments', 'dueDate', 'updatedAt'])
+            ) || isWsAdmin(workspaceId)
+          );
+        allow delete: if isVerified() && isValidId(workspaceId) && isValidId(debtId) && isWsAdmin(workspaceId);
+      }
+
+      match /promoCodes/{promoId} {
+        allow get: if canGetStoreDoc(workspaceId, promoId);
+        allow list: if canReadStoreRow(workspaceId, resource.data);
+        allow create: if isVerified() && isValidId(workspaceId) && isValidId(promoId) &&
+          isValidPromoCode(incoming(), promoId, true) &&
+          incoming().ownerUid == wsDoc(workspaceId).data.ownerUid &&
+          isWsMember(workspaceId) &&
+          canMemberStore(workspaceId, incoming().storeId) &&
+          hasMemberPerm(workspaceId, 'manage_marketing');
+        allow update: if isVerified() && isValidId(workspaceId) && isValidId(promoId) &&
+          isValidPromoCode(incoming(), promoId, false) &&
+          isWsMember(workspaceId) &&
+          canMemberStore(workspaceId, existing().storeId) && (
+            (
+              hasMemberPerm(workspaceId, 'sell') &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['usedCount', 'updatedAt'])
+            ) ||
+            (
+              hasMemberPerm(workspaceId, 'manage_marketing') &&
+              incoming().diff(existing()).affectedKeys().hasOnly([
+                'code', 'discountType', 'discountValue', 'minOrderAmount', 'maxUses', 'usedCount', 'expiresAt', 'isActive', 'updatedAt'
+              ])
+            ) || isWsAdmin(workspaceId)
+          );
+        allow delete: if isVerified() && isValidId(workspaceId) && isValidId(promoId) && isWsAdmin(workspaceId);
+      }
+
+      // 6i. Staff Directory (Non-PII) & Isolated Staff Credentials (Admin-Only PII + Hashed Credentials)
+      match /staffDirectory/{staffId} {
+        allow get: if canGetStoreDoc(workspaceId, staffId);
+        allow list: if canReadStoreRow(workspaceId, resource.data);
+        allow create: if isVerified() && isValidId(workspaceId) && isValidId(staffId) &&
+          isValidStaffDirectoryEntry(incoming(), staffId, true) &&
+          incoming().ownerUid == wsDoc(workspaceId).data.ownerUid &&
+          isWsAdmin(workspaceId);
+        allow update: if isVerified() && isValidId(workspaceId) && isValidId(staffId) &&
+          isValidStaffDirectoryEntry(incoming(), staffId, false) &&
+          isWsAdmin(workspaceId) && (
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'name', 'roleId', 'assignedStoreIds', 'customPermissions', 'isActive',
+              'avatarColor', 'schedule', 'storeId', 'memberUids', 'updatedAt'
+            ])
+          );
+        allow delete: if isVerified() && isValidId(workspaceId) && isValidId(staffId) && isWsAdmin(workspaceId);
+      }
+
+      match /staffCredentials/{staffId} {
+        allow get: if isVerified() && isValidId(workspaceId) && isValidId(staffId) && isWsAdminRead(workspaceId);
+        allow list: if canReadAdminRow(workspaceId, resource.data);
+        allow create: if isVerified() && isValidId(workspaceId) && isValidId(staffId) &&
+          isValidStaffCredential(incoming(), staffId, true) &&
+          incoming().ownerUid == wsDoc(workspaceId).data.ownerUid &&
+          isWsAdmin(workspaceId);
+        allow update: if isVerified() && isValidId(workspaceId) && isValidId(staffId) &&
+          isValidStaffCredential(incoming(), staffId, false) &&
+          isWsAdmin(workspaceId) &&
+          (!('password' in incoming()) || ('password' in existing() && incoming().password == existing().password)) &&
+          (!('pin' in incoming()) || ('pin' in existing() && incoming().pin == existing().pin)) && (
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'phone', 'passwordHash', 'pinHash', 'hashAlgo', 'authMigrated',
+              'googleEmail', 'baseSalary', 'commissionPercent', 'hiredAt',
+              'storeId', 'adminUids', 'updatedAt'
+            ]) ||
+            (
+              ('passwordHash' in incoming() || 'pinHash' in incoming() || incoming().authMigrated == true) &&
+              incoming().diff(existing()).affectedKeys().hasOnly([
+                'password', 'pin', 'passwordHash', 'pinHash', 'hashAlgo', 'authMigrated', 'updatedAt'
+              ]) &&
+              !('password' in incoming()) &&
+              !('pin' in incoming())
+            )
+          );
+        allow delete: if isVerified() && isValidId(workspaceId) && isValidId(staffId) && isWsAdmin(workspaceId);
+      }
+
+      match /staffInvites/{inviteId} {
+        allow get: if isVerified() && isValidId(workspaceId) && isValidId(inviteId) && (
+          isWsAdminRead(workspaceId) ||
+          (
+            isWsMemberRead(workspaceId) &&
+            request.auth.token.email is string &&
+            inviteId == authEmailSha256()
+          )
+        );
+        allow list: if canReadAdminRow(workspaceId, resource.data);
+        allow create: if isVerified() && isValidId(workspaceId) && isValidId(inviteId) &&
+          isValidStaffInvite(incoming(), inviteId, true) &&
+          hasAdminTenantFieldsForWs(incoming(), workspaceId) &&
+          isWsAdmin(workspaceId);
+        allow update: if isVerified() && isValidId(workspaceId) && isValidId(inviteId) &&
+          isValidStaffInvite(incoming(), inviteId, false) &&
+          isWsAdmin(workspaceId) && (
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'staffId', 'userId', 'roleId', 'assignedStoreIds', 'permissions', 'adminUids', 'updatedAt'
+            ])
+          );
+        allow delete: if isVerified() && isValidId(workspaceId) && isValidId(inviteId) && isWsAdmin(workspaceId);
+      }
+
+      match /targets/{targetId} {
+        allow get: if canGetStoreDoc(workspaceId, targetId);
+        allow list: if canReadStoreRow(workspaceId, resource.data);
+        allow create: if isVerified() && isValidId(workspaceId) && isValidId(targetId) &&
+          isValidTarget(incoming(), targetId, true) &&
+          incoming().ownerUid == wsDoc(workspaceId).data.ownerUid &&
+          isWsMember(workspaceId) &&
+          canMemberStore(workspaceId, incoming().storeId) &&
+          hasMemberPerm(workspaceId, 'manage_employees');
+        allow update: if isVerified() && isValidId(workspaceId) && isValidId(targetId) &&
+          isValidTarget(incoming(), targetId, false) &&
+          isWsAdmin(workspaceId) && (
+            incoming().diff(existing()).affectedKeys().hasOnly(['employeeId', 'month', 'targetAmount', 'memberUids', 'updatedAt'])
+          );
+        allow delete: if isVerified() && isValidId(workspaceId) && isValidId(targetId) && isWsAdmin(workspaceId);
+      }
+
+      // 6j. Online Orders, Audit Logs & Idempotent Offline Sync Markers
+      match /onlineOrders/{orderId} {
+        allow get: if canGetStoreDoc(workspaceId, orderId);
+        allow list: if canReadStoreRow(workspaceId, resource.data);
+        allow create: if isVerified() && isValidId(workspaceId) && isValidId(orderId) &&
+          isValidOnlineOrder(incoming(), orderId, true) &&
+          incoming().ownerUid == wsDoc(workspaceId).data.ownerUid &&
+          isWsMember(workspaceId) &&
+          canMemberStore(workspaceId, incoming().storeId);
+        allow update: if isVerified() && isValidId(workspaceId) && isValidId(orderId) &&
+          isValidOnlineOrder(incoming(), orderId, false) &&
+          isWsMember(workspaceId) &&
+          canMemberStore(workspaceId, existing().storeId) && (
+            (
+              existing().status in ['new', 'confirmed'] &&
+              (hasMemberPerm(workspaceId, 'sell') || hasMemberPerm(workspaceId, 'manage_stock')) &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['status', 'note', 'updatedAt'])
+            ) || isWsAdmin(workspaceId)
+          );
+        allow delete: if isVerified() && isValidId(workspaceId) && isValidId(orderId) && isWsAdmin(workspaceId);
+      }
+
+      match /auditLogs/{auditId} {
+        allow get: if canGetStoreDoc(workspaceId, auditId);
+        allow list: if canReadStoreRow(workspaceId, resource.data);
+        allow create: if isVerified() && isValidId(workspaceId) && isValidId(auditId) &&
+          isValidAuditLog(incoming(), auditId, true) &&
+          incoming().ownerUid == wsDoc(workspaceId).data.ownerUid &&
+          isWsMember(workspaceId) &&
+          canMemberStore(workspaceId, incoming().storeId);
+        allow update: if isVerified() && isValidId(workspaceId) && isValidId(auditId) &&
+          isValidAuditLog(incoming(), auditId, false) &&
+          isWsAdmin(workspaceId) &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['memberUids', 'updatedAt']);
+        allow delete: if false;
+      }
+
+      match /syncedOps/{opId} {
+        allow get: if canGetStoreDoc(workspaceId, opId);
+        allow list: if canReadStoreRow(workspaceId, resource.data);
+        allow create: if isVerified() && isValidId(workspaceId) && isValidId(opId) &&
+          isValidSyncedOp(incoming(), opId, true) &&
+          incoming().ownerUid == wsDoc(workspaceId).data.ownerUid &&
+          isWsMember(workspaceId) &&
+          canMemberStore(workspaceId, incoming().storeId);
+        allow update: if isVerified() && isValidId(workspaceId) && isValidId(opId) &&
+          isValidSyncedOp(incoming(), opId, false) &&
+          isWsAdmin(workspaceId) &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['memberUids', 'updatedAt']);
+        allow delete: if false;
+      }
+    }
+  }
+}
