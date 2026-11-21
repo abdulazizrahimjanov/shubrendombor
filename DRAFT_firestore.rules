@@ -1471,7 +1471,7 @@ service cloud.firestore {
             isWsAdmin(workspaceId) ||
             hasMemberPerm(workspaceId, 'manage_stock') ||
             hasMemberPerm(workspaceId, 'manage_products') ||
-            (canNegativeStockSetting(workspaceId) && incoming().qty < 0)
+            (canNegativeStockSetting(workspaceId) && incoming().qty <= 0)
           );
         allow update: if isVerified() && isValidId(workspaceId) && isValidId(stockItemId) &&
           isValidStockItem(incoming(), stockItemId, false) &&
@@ -1704,8 +1704,7 @@ service cloud.firestore {
         allow create: if isVerified() && isValidId(workspaceId) && isValidId(accountId) &&
           isValidAccount(incoming(), accountId, true) &&
           incoming().ownerUid == wsDoc(workspaceId).data.ownerUid &&
-          isActiveWsMember(workspaceId) &&
-          hasMemberPerm(workspaceId, 'manage_finance');
+          isActiveWsMember(workspaceId);
         allow update: if isVerified() && isValidId(workspaceId) && isValidId(accountId) &&
           isValidAccount(incoming(), accountId, false) &&
           isActiveWsMember(workspaceId) && (

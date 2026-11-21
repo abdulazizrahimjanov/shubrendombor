@@ -189,7 +189,7 @@ export const DIRTY_DOZEN_PAYLOADS = [
   },
 ] as const;
 
-const PROJECT_ID = 'gen-lang-client-0941554671';
+const PROJECT_ID = 'gen-lang-client-0396501667';
 const WS_ID = 'ws-shubrend-main';
 const OWNER_UID = 'uid-owner';
 const OWNER_EMAIL = 'assdsh993@gmail.com';
