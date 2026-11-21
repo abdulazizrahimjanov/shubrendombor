@@ -16,11 +16,27 @@ import {
   ShieldAlert,
   ArrowRight,
   Users,
+  Package,
+  CheckCircle2,
+  Banknote,
+  CreditCard,
+  Smartphone,
+  Building2,
+  Wallet,
+  Printer,
+  Share2,
+  ShoppingBag,
+  UserCheck,
 } from 'lucide-react';
 import { useAppStore, uid } from '../store/useAppStore';
 import { formatDateTime, formatMoney, useT } from '../i18n';
 import { PaymentMethod, Product, Sale, SaleItem } from '../types/models';
-import { formatUzsSpaced } from '../utils/receipt';
+import {
+  buildSaleShareText,
+  formatUzsSpaced,
+  generateSaleQr,
+  printSaleReceipt,
+} from '../utils/receipt';
 import { ProductThumb } from '../components/BarcodeSvg';
 
 declare global {
@@ -255,7 +271,10 @@ export const POSPage: React.FC = () => {
   const setSavatchaMenuOpen = useAppStore((s) => s.setSavatchaMenuOpen);
 
   const getVariantStock = useAppStore((s) => s.getVariantStock);
-  const getWarehouseForStore = useAppStore((s) => s.getWarehouseForStore);
+  const getSharedWarehouseId = useAppStore((s) => s.getSharedWarehouseId);
+  const currentUser = useAppStore((s) => s.getCurrentUser());
+  const can = useAppStore((s) => s.can);
+  const completeSale = useAppStore((s) => s.completeSale);
   const createDeferredTransaction = useAppStore((s) => s.createDeferredTransaction);
   const upsertProduct = useAppStore((s) => s.upsertProduct);
   const quickAddStock = useAppStore((s) => s.quickAddStock);
@@ -271,11 +290,14 @@ export const POSPage: React.FC = () => {
 
   const currentStoreId =
     activeStoreId !== 'all' ? activeStoreId : db?.stores[0]?.id ?? 'store-chilonzor';
-  const currentWarehouseId = getWarehouseForStore(currentStoreId);
+  const currentWarehouseId = getSharedWarehouseId();
 
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [rawSearch, setRawSearch] = useState('');
   const [search, setSearch] = useState('');
+  const [selectedCategoryId, setSelectedCategoryId] = useState<string>('all');
+  const [selectedVariantsByProd, setSelectedVariantsByProd] = useState<Record<string, string>>({});
+  const [cardQtyByProd, setCardQtyByProd] = useState<Record<string, number>>({});
 
   // Sheets & modals
   const [scannerOpen, setScannerOpen] = useState(false);
@@ -289,6 +311,15 @@ export const POSPage: React.FC = () => {
   const [deferredModalOpen, setDeferredModalOpen] = useState(false);
   const [shiftModalOpen, setShiftModalOpen] = useState(false);
   const [returnsModalOpen, setReturnsModalOpen] = useState(false);
+
+  // Direct atomic checkout modal & double-submit protection
+  const [checkoutModalOpen, setCheckoutModalOpen] = useState(false);
+  const [directMethod, setDirectMethod] = useState<PaymentMethod>('cash');
+  const [directCashGiven, setDirectCashGiven] = useState<number>(0);
+  const [directSaleNote, setDirectSaleNote] = useState('');
+  const [completedReceipt, setCompletedReceipt] = useState<{ sale: Sale; qrUrl: string } | null>(null);
+  const saleLockRef = useRef(false);
+  const pendingSaleOpRef = useRef<{ signature: string; saleId: string; idempotencyKey: string } | null>(null);
 
   const [quickCreateBarcode, setQuickCreateBarcode] = useState<string | null>(null);
   const [quickProdName, setQuickProdName] = useState('');
@@ -432,6 +463,36 @@ export const POSPage: React.FC = () => {
     return map;
   }, [db]);
 
+  const categoriesSorted = useMemo(() => {
+    if (!db) return [];
+    return [...db.categories].sort((a, b) => a.sortOrder - b.sortOrder);
+  }, [db]);
+
+  const categoryNameById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const c of categoriesSorted) {
+      map.set(c.id, language === 'ru' && c.nameRu ? c.nameRu : c.nameUz);
+    }
+    return map;
+  }, [categoriesSorted, language]);
+
+  const catalogProducts = useMemo(() => {
+    if (!db) return [];
+    return db.products.filter((p) => {
+      if (selectedCategoryId !== 'all' && p.categoryId !== selectedCategoryId) return false;
+      if (!search) return true;
+      const catName = (categoryNameById.get(p.categoryId) ?? '').toLowerCase();
+      if (p.name.toLowerCase().includes(search) || catName.includes(search)) return true;
+      return p.variants.some(
+        (v) =>
+          v.sku.toLowerCase().includes(search) ||
+          v.barcodes.some((b) => b.toLowerCase().includes(search)) ||
+          (v.color?.toLowerCase().includes(search) ?? false) ||
+          (v.size?.toLowerCase().includes(search) ?? false)
+      );
+    });
+  }, [db, selectedCategoryId, search, categoryNameById]);
+
   const searchResults = useMemo(() => {
     if (!db || !search) return [];
     const list: { product: Product; variant: Product['variants'][0]; stock: number }[] = [];
@@ -452,6 +513,9 @@ export const POSPage: React.FC = () => {
   }, [db, search, stockByVariant]);
 
   if (!db) return null;
+
+  const sharedWarehouse = db.warehouses.find((w) => w.id === currentWarehouseId) ?? db.warehouses[0];
+  const canQuickCreateProduct = can('edit_catalog') || can('manage_inventory');
 
   const activeShift = db.cashShifts.find(
     (s) => s.status === 'open' && s.storeId === currentStoreId
@@ -490,10 +554,11 @@ export const POSPage: React.FC = () => {
     !db.settings.allowNegativeStock &&
     cartItems.some((it) => it.qty > (stockByVariant.get(it.variantId) ?? getVariantStock(it.variantId, currentWarehouseId)));
 
-  const addVariantToCart = (product: Product, variant: Product['variants'][0]) => {
+  const addVariantToCart = (product: Product, variant: Product['variants'][0], addQty = 1) => {
+    const qtyToAdd = Math.max(1, Math.floor(addQty));
     const stock = stockByVariant.get(variant.id) ?? getVariantStock(variant.id, currentWarehouseId);
     const existing = cartItems.find((i) => i.variantId === variant.id);
-    const nextQty = (existing?.qty ?? 0) + 1;
+    const nextQty = (existing?.qty ?? 0) + qtyToAdd;
     if (!db.settings.allowNegativeStock && nextQty > stock) {
       notify(`Omborda yetarli qoldiq yo'q (${stock} ${product.unit})`, 'error');
       return;
@@ -510,6 +575,7 @@ export const POSPage: React.FC = () => {
       );
     } else {
       const label = [variant.size, variant.color].filter(Boolean).join(' / ');
+      const gross = qtyToAdd * variant.retailPrice;
       setCartItems((prev) => [
         ...prev,
         {
@@ -519,16 +585,17 @@ export const POSPage: React.FC = () => {
           productName: product.name,
           variantLabel: label,
           sku: variant.sku,
-          qty: 1,
+          qty: qtyToAdd,
           unitPrice: variant.retailPrice,
           purchasePrice: variant.purchasePrice,
           discountAmount: 0,
           discountPercent: 0,
-          lineTotal: variant.retailPrice,
+          lineTotal: gross,
         },
       ]);
     }
-    notify(`${product.name} savatchaga qo'shildi`, 'success');
+    const sizeText = variant.size ? ` (${variant.size})` : '';
+    notify(`${product.name}${sizeText} ×${qtyToAdd} savatchaga qo'shildi`, 'success');
   };
 
   const handleBarcodeScanned = (code: string) => {
@@ -536,11 +603,15 @@ export const POSPage: React.FC = () => {
     if (!clean) return;
     const hit = barcodeLookupMap.get(clean.toLowerCase());
     if (hit) {
-      addVariantToCart(hit.product, hit.variant);
+      addVariantToCart(hit.product, hit.variant, 1);
       setRawSearch('');
       return;
     }
-    // Unknown barcode -> quick create right inside Savatcha
+    if (!canQuickCreateProduct) {
+      notify(`"${clean}" shtrix-kodli mahsulot bazada topilmadi`, 'error');
+      return;
+    }
+    // Unknown barcode -> quick create right inside Savatcha (authorized catalog/inventory staff)
     setQuickCreateBarcode(clean);
     setQuickProdName(`Yangi tovar (${clean.slice(-4)})`);
     setQuickProdPrice(120000);
@@ -556,6 +627,7 @@ export const POSPage: React.FC = () => {
       const nowIso = new Date().toISOString();
       const pId = uid('prod');
       const vId = uid('var');
+      const creatorId = currentUser?.id ?? 'system';
       const product: Product = {
         id: pId,
         name: quickProdName.trim(),
@@ -577,13 +649,13 @@ export const POSPage: React.FC = () => {
             storeId: currentStoreId,
             createdAt: nowIso,
             updatedAt: nowIso,
-            createdBy: 'usr-cashier',
+            createdBy: creatorId,
           },
         ],
         storeId: currentStoreId,
         createdAt: nowIso,
         updatedAt: nowIso,
-        createdBy: 'usr-cashier',
+        createdBy: creatorId,
       };
       const res = await upsertProduct(product);
       if (!res.ok) {
@@ -591,7 +663,7 @@ export const POSPage: React.FC = () => {
         return;
       }
       await quickAddStock(pId, vId, currentWarehouseId, Math.max(1, quickProdQty), 'Savatcha tezkor yaratish');
-      addVariantToCart(product, product.variants[0]);
+      addVariantToCart(product, product.variants[0], 1);
       setQuickCreateBarcode(null);
       setRawSearch('');
     } catch (err) {
@@ -644,12 +716,92 @@ export const POSPage: React.FC = () => {
     setCartDiscountPercent(safePct);
   };
 
-  const handleProceedToPayment = async () => {
-    if (isSubmitting || cartItems.length === 0) return;
+  const openDirectCheckout = () => {
+    if (cartItems.length === 0) return;
     if (hasOverStockError) {
       notify("Ba'zi tovarlar qoldig'i omborda yetarli emas", 'error');
       return;
     }
+    setDirectMethod('cash');
+    setDirectCashGiven(finalTotal);
+    setDirectSaleNote('');
+    setCheckoutModalOpen(true);
+  };
+
+  const handleConfirmDirectSale = async () => {
+    if (saleLockRef.current || isSubmitting || cartItems.length === 0) return;
+    if (hasOverStockError) {
+      notify("Ba'zi tovarlar qoldig'i omborda yetarli emas", 'error');
+      return;
+    }
+    if (directMethod === 'debt' && !cartCustomerId) {
+      notify("Nasiya (qarz) sotuv uchun avval mijozni tanlang", 'error');
+      return;
+    }
+    if (directMethod === 'cash' && directCashGiven < finalTotal) {
+      notify("Berilgan naqd summa jami summadan kam", 'error');
+      return;
+    }
+
+    const cartSignature = JSON.stringify({
+      items: cartItems.map((it) => [it.variantId, it.qty, it.lineTotal]),
+      finalTotal,
+      cust: cartCustomerId,
+      method: directMethod,
+    });
+    if (!pendingSaleOpRef.current || pendingSaleOpRef.current.signature !== cartSignature) {
+      pendingSaleOpRef.current = {
+        signature: cartSignature,
+        saleId: uid('sale'),
+        idempotencyKey: uid('sync'),
+      };
+    }
+    const { saleId, idempotencyKey } = pendingSaleOpRef.current;
+
+    saleLockRef.current = true;
+    setIsSubmitting(true);
+    try {
+      const cashGivenVal = directMethod === 'cash' ? directCashGiven : undefined;
+      const changeVal =
+        directMethod === 'cash' ? Math.max(0, directCashGiven - finalTotal) : undefined;
+      const createdSale = await completeSale({
+        saleId,
+        idempotencyKey,
+        storeId: currentStoreId,
+        warehouseId: currentWarehouseId,
+        items: cartItems,
+        customerId: cartCustomerId || undefined,
+        checkDiscountAmount: totalCheckDiscount,
+        checkDiscountPercent: cartDiscountPercent,
+        loyaltyPointsSpent: effectiveLoyaltySpent,
+        promoCode: cartPromoCode || undefined,
+        payments: [{ method: directMethod, amount: finalTotal }],
+        cashGiven: cashGivenVal,
+        changeAmount: changeVal,
+        note: directSaleNote.trim() || undefined,
+      });
+
+      pendingSaleOpRef.current = null;
+      clearCart();
+      setCheckoutModalOpen(false);
+      const qrUrl = await generateSaleQr(createdSale, db.settings.showReceiptQr);
+      setCompletedReceipt({ sale: createdSale, qrUrl });
+      notify(`Sotuv ${createdSale.receiptNumber} tasdiqlandi`, 'success');
+    } catch (err) {
+      notify(err instanceof Error ? err.message : 'Sotuvni tasdiqlashda xatolik yuz berdi', 'error');
+    } finally {
+      saleLockRef.current = false;
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleProceedToPayment = async () => {
+    if (saleLockRef.current || isSubmitting || cartItems.length === 0) return;
+    if (hasOverStockError) {
+      notify("Ba'zi tovarlar qoldig'i omborda yetarli emas", 'error');
+      return;
+    }
+    saleLockRef.current = true;
     setIsSubmitting(true);
     try {
       const tx = await createDeferredTransaction({
@@ -667,7 +819,41 @@ export const POSPage: React.FC = () => {
     } catch (err) {
       notify(err instanceof Error ? err.message : "Chek yaratishda xatolik yuz berdi", 'error');
     } finally {
+      saleLockRef.current = false;
       setIsSubmitting(false);
+    }
+  };
+
+  const handlePrintReceipt = async (targetSale: Sale) => {
+    await printSaleReceipt({
+      sale: targetSale,
+      settings: db.settings,
+      store: db.stores.find((st) => st.id === targetSale.storeId),
+      language,
+      methodLabels: t.pos.methods as Record<string, string>,
+    });
+  };
+
+  const handleShareReceipt = async (targetSale: Sale) => {
+    const text = buildSaleShareText({
+      sale: targetSale,
+      brandName: db.settings.brandName,
+      store: db.stores.find((st) => st.id === targetSale.storeId),
+      language,
+    });
+    if (navigator.share) {
+      try {
+        await navigator.share({ title: `Chek ${targetSale.receiptNumber}`, text });
+        return;
+      } catch {
+        // fallback to clipboard
+      }
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+      notify('Chek matni buferga nusxalandi', 'success');
+    } catch {
+      notify('Ulashish imkonsiz', 'error');
     }
   };
 
@@ -677,8 +863,10 @@ export const POSPage: React.FC = () => {
     return c.name.toLowerCase().includes(q) || c.phone.includes(q);
   });
 
+  const directMethods = db.settings.enabledPaymentMethods.filter((m) => m !== 'loyalty');
+
   return (
-    <div className="max-w-3xl mx-auto pb-36 lg:pb-24 space-y-3">
+    <div className={`max-w-4xl mx-auto space-y-3 ${cartItems.length > 0 ? 'pb-64 lg:pb-44' : 'pb-36 lg:pb-24'}`}>
       {/* Search Field: "Artikul, shtrix-kod, ism" */}
       <div className="relative">
         <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
@@ -707,6 +895,24 @@ export const POSPage: React.FC = () => {
             <X className="w-4 h-4" />
           </button>
         )}
+      </div>
+
+      {/* Auto-detected Seller & Single Shared Warehouse Info Strip */}
+      <div className="flex flex-wrap items-center justify-between gap-2 px-3.5 py-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 text-xs">
+        <div className="flex items-center gap-2 min-w-0">
+          <UserCheck className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+          <span className="text-slate-500 dark:text-slate-400">Sotuvchi:</span>
+          <strong className="text-slate-900 dark:text-white truncate">
+            {currentUser?.name ?? 'Xodim'}
+          </strong>
+        </div>
+        <div className="flex items-center gap-1.5 text-slate-500 dark:text-slate-400">
+          <Package className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+          <span>Yagona ombor:</span>
+          <strong className="text-slate-800 dark:text-slate-200 truncate max-w-[180px]">
+            {sharedWarehouse?.name ?? 'Asosiy ombor'}
+          </strong>
+        </div>
       </div>
 
       {/* Attached customer / discount indicator bar */}
@@ -740,7 +946,7 @@ export const POSPage: React.FC = () => {
         </div>
       )}
 
-      {/* Search Results List (appears when typing in search field) */}
+      {/* Search Quick Dropdown (when typing barcode/SKU) */}
       {search && (
         <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl overflow-hidden shadow-md divide-y divide-slate-100 dark:divide-slate-800">
           {searchResults.length === 0 ? (
@@ -748,17 +954,19 @@ export const POSPage: React.FC = () => {
               <div className="text-sm font-semibold text-slate-700 dark:text-slate-200">
                 "{rawSearch}" bo'yicha tovar topilmadi
               </div>
-              <button
-                type="button"
-                onClick={() => handleBarcodeScanned(rawSearch)}
-                className="h-10 px-4 rounded-xl bg-blue-600 text-white text-xs font-semibold inline-flex items-center gap-1.5"
-              >
-                <Plus className="w-4 h-4" />
-                <span>{t.pos.quickCreate}</span>
-              </button>
+              {canQuickCreateProduct && (
+                <button
+                  type="button"
+                  onClick={() => handleBarcodeScanned(rawSearch)}
+                  className="h-10 px-4 rounded-xl bg-blue-600 text-white text-xs font-semibold inline-flex items-center gap-1.5"
+                >
+                  <Plus className="w-4 h-4" />
+                  <span>{t.pos.quickCreate}</span>
+                </button>
+              )}
             </div>
           ) : (
-            searchResults.map(({ product, variant, stock }) => {
+            searchResults.slice(0, 8).map(({ product, variant, stock }) => {
               const outOfStock = stock <= 0 && !db.settings.allowNegativeStock;
               return (
                 <button
@@ -766,7 +974,7 @@ export const POSPage: React.FC = () => {
                   type="button"
                   disabled={outOfStock}
                   onClick={() => {
-                    addVariantToCart(product, variant);
+                    addVariantToCart(product, variant, 1);
                     setRawSearch('');
                     setSearch('');
                   }}
@@ -809,37 +1017,27 @@ export const POSPage: React.FC = () => {
         </div>
       )}
 
-      {/* Cart Body: Empty State OR Cart Item Rows */}
-      {cartItems.length === 0 && !search ? (
-        <div className="min-h-[52vh] flex flex-col items-center justify-center text-center px-6 py-10">
-          {/* Faded Barcode Illustration */}
-          <div className="w-32 h-24 rounded-2xl border-2 border-dashed border-slate-200 dark:border-slate-800 flex items-center justify-center mb-5 text-slate-300 dark:text-slate-700">
-            <svg viewBox="0 0 120 64" className="w-24 h-14 fill-current" aria-hidden="true">
-              <rect x="6" y="8" width="4" height="48" rx="1" />
-              <rect x="14" y="8" width="2" height="48" rx="1" />
-              <rect x="20" y="8" width="6" height="48" rx="1" />
-              <rect x="30" y="8" width="3" height="48" rx="1" />
-              <rect x="38" y="8" width="5" height="48" rx="1" />
-              <rect x="47" y="8" width="2" height="48" rx="1" />
-              <rect x="53" y="8" width="7" height="48" rx="1" />
-              <rect x="64" y="8" width="3" height="48" rx="1" />
-              <rect x="72" y="8" width="4" height="48" rx="1" />
-              <rect x="80" y="8" width="2" height="48" rx="1" />
-              <rect x="86" y="8" width="6" height="48" rx="1" />
-              <rect x="96" y="8" width="4" height="48" rx="1" />
-              <rect x="104" y="8" width="3" height="48" rx="1" />
-              <rect x="111" y="8" width="3" height="48" rx="1" />
-            </svg>
+      {/* Active Cart Section (always visible above product showcase when cart has items) */}
+      {cartItems.length > 0 && (
+        <section className="space-y-2.5">
+          <div className="flex items-center justify-between px-1">
+            <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+              <ShoppingBag className="w-3.5 h-3.5 text-blue-600" />
+              <span>
+                {t.pos.cart} ({totalUnits} {t.transactions.units})
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                clearCart();
+                notify('Savatcha tozalandi', 'info');
+              }}
+              className="text-xs font-semibold text-red-500 hover:text-red-600"
+            >
+              {t.pos.clearCart}
+            </button>
           </div>
-          <h2 className="font-display text-lg font-bold text-slate-900 dark:text-white">
-            {t.pos.emptyCart}
-          </h2>
-          <p className="text-sm text-slate-500 dark:text-slate-400 max-w-xs mt-1.5 leading-relaxed">
-            {t.pos.emptyCartHint}
-          </p>
-        </div>
-      ) : (
-        cartItems.length > 0 && (
           <div className="space-y-2.5">
             {cartItems.map((it) => (
               <SwipeCartRow
@@ -853,13 +1051,254 @@ export const POSPage: React.FC = () => {
               />
             ))}
           </div>
-        )
+        </section>
       )}
+
+      {/* Category Filter Strip */}
+      <div className="flex items-center gap-2 overflow-x-auto pb-1 no-scrollbar">
+        <button
+          type="button"
+          onClick={() => setSelectedCategoryId('all')}
+          className={`h-9 px-3.5 rounded-xl text-xs font-semibold whitespace-nowrap transition-colors border ${
+            selectedCategoryId === 'all'
+              ? 'bg-blue-600 text-white border-blue-600 shadow-xs'
+              : 'bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800'
+          }`}
+        >
+          Barchasi ({db.products.length})
+        </button>
+        {categoriesSorted.map((cat) => {
+          const catLabel = language === 'ru' && cat.nameRu ? cat.nameRu : cat.nameUz;
+          const active = selectedCategoryId === cat.id;
+          return (
+            <button
+              key={cat.id}
+              type="button"
+              onClick={() => setSelectedCategoryId(cat.id)}
+              className={`h-9 px-3.5 rounded-xl text-xs font-semibold whitespace-nowrap transition-colors border ${
+                active
+                  ? 'bg-blue-600 text-white border-blue-600 shadow-xs'
+                  : 'bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800'
+              }`}
+            >
+              {catLabel}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* All Products Grid in Sales Section */}
+      <section className="space-y-2.5">
+        <div className="flex items-center justify-between px-1">
+          <h2 className="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+            Barcha mahsulotlar ({catalogProducts.length})
+          </h2>
+          <span className="text-[11px] text-slate-400">
+            O'lcham va miqdorni tanlab savatchaga qo'shing
+          </span>
+        </div>
+
+        {catalogProducts.length === 0 ? (
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-8 text-center space-y-2">
+            <Package className="w-8 h-8 text-slate-300 dark:text-slate-600 mx-auto" />
+            <div className="text-sm font-semibold text-slate-700 dark:text-slate-200">
+              Mahsulot topilmadi
+            </div>
+            <p className="text-xs text-slate-500">
+              Boshqa kategoriya yoki qidiruv so'zini tanlab ko'ring
+            </p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {catalogProducts.map((product) => {
+              const variants = product.variants ?? [];
+              if (variants.length === 0) return null;
+
+              const totalProductStock = variants.reduce(
+                (sum, v) => sum + (stockByVariant.get(v.id) ?? 0),
+                0
+              );
+
+              const preferredVarId = selectedVariantsByProd[product.id];
+              const activeVariant =
+                variants.find((v) => v.id === preferredVarId) ??
+                variants.find((v) => (stockByVariant.get(v.id) ?? 0) > 0) ??
+                variants[0];
+
+              const activeVarStock = stockByVariant.get(activeVariant.id) ?? 0;
+              const inCartQty =
+                cartItems.find((ci) => ci.variantId === activeVariant.id)?.qty ?? 0;
+              const maxAddable = db.settings.allowNegativeStock
+                ? 999
+                : Math.max(0, activeVarStock - inCartQty);
+
+              const desiredQty = Math.max(
+                1,
+                Math.min(cardQtyByProd[product.id] ?? 1, db.settings.allowNegativeStock ? 999 : Math.max(1, maxAddable))
+              );
+              const outOfStock = !db.settings.allowNegativeStock && maxAddable <= 0;
+              const catName = categoryNameById.get(product.categoryId) ?? 'Katalog';
+
+              return (
+                <div
+                  key={product.id}
+                  className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-3.5 shadow-xs flex flex-col justify-between gap-3"
+                >
+                  {/* Top Header: Thumb + Name + SKU + Category + Price + Total Stock */}
+                  <div className="flex items-start gap-3">
+                    <ProductThumb
+                      src={product.photoUrl}
+                      name={product.name}
+                      className="w-14 h-14 rounded-xl shrink-0"
+                    />
+                    <div className="min-w-0 flex-1 space-y-1">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="text-sm font-bold text-slate-900 dark:text-white leading-snug line-clamp-2">
+                          {product.name}
+                        </div>
+                        <span
+                          className={`shrink-0 px-2 py-0.5 rounded-md text-[11px] font-mono font-bold ${
+                            totalProductStock <= 0
+                              ? 'bg-red-50 dark:bg-red-950/50 text-red-600 dark:text-red-400'
+                              : totalProductStock <= 5
+                              ? 'bg-amber-50 dark:bg-amber-950/50 text-amber-700 dark:text-amber-300'
+                              : 'bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300'
+                          }`}
+                        >
+                          Jami: {totalProductStock} {product.unit}
+                        </span>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-slate-500 dark:text-slate-400">
+                        <span className="font-mono">{activeVariant.sku}</span>
+                        <span>·</span>
+                        <span>{catName}</span>
+                      </div>
+
+                      <div className="font-mono tabular-nums text-sm font-extrabold text-blue-600 dark:text-blue-400">
+                        {formatUzsSpaced(activeVariant.retailPrice)}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Sizes / Variants Selector with Per-Size Live Stock */}
+                  <div className="space-y-1.5">
+                    <div className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">
+                      O'lchamlar (qoldiq):
+                    </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {variants.map((v) => {
+                        const vStock = stockByVariant.get(v.id) ?? 0;
+                        const isSelected = v.id === activeVariant.id;
+                        const sizeLabel = [v.size, v.color].filter(Boolean).join(' / ') || 'Standart';
+                        const isEmpty = vStock <= 0;
+                        return (
+                          <button
+                            key={v.id}
+                            type="button"
+                            onClick={() => {
+                              setSelectedVariantsByProd((prev) => ({
+                                ...prev,
+                                [product.id]: v.id,
+                              }));
+                              setCardQtyByProd((prev) => ({ ...prev, [product.id]: 1 }));
+                            }}
+                            className={`px-2.5 py-1.5 rounded-xl border text-xs font-semibold inline-flex items-center gap-1.5 transition-all ${
+                              isSelected
+                                ? 'border-blue-600 bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 ring-1 ring-blue-600'
+                                : isEmpty
+                                ? 'border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-slate-400'
+                                : 'border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-slate-700 dark:text-slate-200 hover:border-blue-400'
+                            }`}
+                          >
+                            <span>{sizeLabel}</span>
+                            <span
+                              className={`font-mono text-[11px] font-bold ${
+                                isEmpty
+                                  ? 'text-red-500'
+                                  : vStock <= v.minStock
+                                  ? 'text-amber-600'
+                                  : isSelected
+                                  ? 'text-blue-700 dark:text-blue-300'
+                                  : 'text-emerald-600 dark:text-emerald-400'
+                              }`}
+                            >
+                              {vStock}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Quantity Stepper + Add to Cart Button */}
+                  <div className="flex items-center gap-2 pt-1 border-t border-slate-100 dark:border-slate-800">
+                    <div className="inline-flex items-center rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 overflow-hidden shrink-0">
+                      <button
+                        type="button"
+                        disabled={desiredQty <= 1 || outOfStock}
+                        onClick={() =>
+                          setCardQtyByProd((prev) => ({
+                            ...prev,
+                            [product.id]: Math.max(1, desiredQty - 1),
+                          }))
+                        }
+                        className="w-9 h-9 flex items-center justify-center text-slate-700 dark:text-slate-200 disabled:opacity-40 hover:bg-slate-200/60 dark:hover:bg-slate-800"
+                        aria-label="Kamaytirish"
+                      >
+                        <Minus className="w-3.5 h-3.5" />
+                      </button>
+                      <span className="min-w-[32px] text-center font-mono tabular-nums text-xs font-bold text-slate-900 dark:text-white">
+                        {desiredQty}
+                      </span>
+                      <button
+                        type="button"
+                        disabled={outOfStock || (!db.settings.allowNegativeStock && desiredQty >= maxAddable)}
+                        onClick={() =>
+                          setCardQtyByProd((prev) => ({
+                            ...prev,
+                            [product.id]: db.settings.allowNegativeStock
+                              ? desiredQty + 1
+                              : Math.min(maxAddable, desiredQty + 1),
+                          }))
+                        }
+                        className="w-9 h-9 flex items-center justify-center text-slate-700 dark:text-slate-200 disabled:opacity-40 hover:bg-slate-200/60 dark:hover:bg-slate-800"
+                        aria-label="Oshirish"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+
+                    <button
+                      type="button"
+                      disabled={outOfStock}
+                      onClick={() => {
+                        addVariantToCart(product, activeVariant, desiredQty);
+                        setCardQtyByProd((prev) => ({ ...prev, [product.id]: 1 }));
+                      }}
+                      className="flex-1 h-9 px-3 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:bg-slate-200 dark:disabled:bg-slate-800 disabled:text-slate-400 text-white text-xs font-bold inline-flex items-center justify-center gap-1.5 transition-colors"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>
+                        {outOfStock
+                          ? activeVarStock <= 0
+                            ? 'Omborda tugagan'
+                            : 'Hammasi savatchada'
+                          : "Savatga qo'shish"}
+                      </span>
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </section>
 
       {/* Sticky Summary (shown once cart has items, fixed right above Skaner pill & tab bar on mobile) */}
       {cartItems.length > 0 && (
         <div className="fixed left-0 right-0 bottom-[132px] lg:bottom-20 lg:left-64 z-20 px-3 sm:px-4 pointer-events-none">
-          <div className="max-w-3xl mx-auto bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border border-slate-200 dark:border-slate-800 rounded-2xl p-3.5 shadow-xl pointer-events-auto space-y-2.5">
+          <div className="max-w-4xl mx-auto bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border border-slate-200 dark:border-slate-800 rounded-2xl p-3.5 shadow-xl pointer-events-auto space-y-2.5">
             <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 text-xs text-slate-500 dark:text-slate-400">
               <span>
                 {totalUnits} {t.transactions.units} · {t.pos.subtotal}:{' '}
@@ -874,7 +1313,7 @@ export const POSPage: React.FC = () => {
               )}
             </div>
 
-            <div className="flex items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center justify-between gap-2.5">
               <div>
                 <div className="text-[11px] uppercase tracking-wider font-semibold text-slate-400">
                   {t.common.total}
@@ -884,15 +1323,28 @@ export const POSPage: React.FC = () => {
                 </div>
               </div>
 
-              <button
-                type="button"
-                disabled={hasOverStockError || isSubmitting}
-                onClick={handleProceedToPayment}
-                className="h-12 px-6 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-bold inline-flex items-center gap-2 shadow-sm transition-colors"
-              >
-                <span>{t.pos.pay}</span>
-                <ArrowRight className="w-4 h-4" />
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  disabled={hasOverStockError || isSubmitting}
+                  onClick={handleProceedToPayment}
+                  title="Aralash to'lov / Kechiktirish"
+                  className="h-11 px-3.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-50 text-slate-700 dark:text-slate-200 text-xs font-bold inline-flex items-center gap-1.5 transition-colors"
+                >
+                  <span>{t.pos.pay}</span>
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </button>
+
+                <button
+                  type="button"
+                  disabled={hasOverStockError || isSubmitting}
+                  onClick={openDirectCheckout}
+                  className="h-11 px-5 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-bold inline-flex items-center gap-2 shadow-sm transition-colors"
+                >
+                  <CheckCircle2 className="w-4 h-4" />
+                  <span>Sotuvni tasdiqlash</span>
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -1191,7 +1643,7 @@ export const POSPage: React.FC = () => {
                       storeId: currentStoreId,
                       createdAt: nowIso,
                       updatedAt: nowIso,
-                      createdBy: 'usr-cashier',
+                      createdBy: currentUser?.id ?? 'system',
                     });
                     setCartCustomerId(created.id);
                     setCartLoyaltySpent(0);
@@ -1805,6 +2257,230 @@ export const POSPage: React.FC = () => {
                 </div>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Direct Atomic Checkout Modal */}
+      {checkoutModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/55 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4">
+          <div className="w-full sm:max-w-md bg-white dark:bg-slate-900 rounded-t-3xl sm:rounded-2xl p-5 pb-safe space-y-4 shadow-2xl max-h-[92vh] overflow-y-auto">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="font-display text-base font-bold text-slate-900 dark:text-white">
+                  Sotuvni tasdiqlash
+                </h3>
+                <p className="text-xs text-slate-500">
+                  Sotuvchi: <strong className="text-slate-700 dark:text-slate-200">{currentUser?.name ?? 'Xodim'}</strong>
+                </p>
+              </div>
+              <button
+                type="button"
+                disabled={isSubmitting}
+                onClick={() => setCheckoutModalOpen(false)}
+                className="w-8 h-8 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 flex items-center justify-between">
+              <div>
+                <div className="text-[11px] uppercase font-semibold text-slate-400">
+                  {totalUnits} {t.transactions.units}
+                </div>
+                <div className="font-display font-mono tabular-nums text-2xl font-extrabold text-slate-900 dark:text-white">
+                  {formatUzsSpaced(finalTotal)}
+                </div>
+              </div>
+              <div className="text-right text-xs text-slate-500">
+                <div>{selectedCustomer ? selectedCustomer.name : t.pos.walkIn}</div>
+                {totalCheckDiscount + effectiveLoyaltySpent > 0 && (
+                  <div className="text-amber-600 font-mono font-semibold">
+                    -{formatUzsSpaced(totalCheckDiscount + effectiveLoyaltySpent)}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              {directMethods.map((method) => {
+                const Icon =
+                  method === 'cash'
+                    ? Banknote
+                    : method === 'transfer'
+                    ? Building2
+                    : method === 'debt'
+                    ? Wallet
+                    : method === 'click' || method === 'payme' || method === 'uzum'
+                    ? Smartphone
+                    : CreditCard;
+                const active = directMethod === method;
+                return (
+                  <button
+                    key={method}
+                    type="button"
+                    onClick={() => {
+                      setDirectMethod(method);
+                      if (method === 'cash') setDirectCashGiven(finalTotal);
+                    }}
+                    className={`h-11 px-3 rounded-xl border text-xs font-bold flex items-center gap-2 transition-colors ${
+                      active
+                        ? 'border-blue-600 bg-blue-50 dark:bg-blue-950/50 text-blue-700 dark:text-blue-300 ring-1 ring-blue-600'
+                        : 'border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800'
+                    }`}
+                  >
+                    <Icon className="w-4 h-4 shrink-0" />
+                    <span className="truncate">{t.pos.methods[method]}</span>
+                  </button>
+                );
+              })}
+            </div>
+
+            {directMethod === 'debt' && !cartCustomerId && (
+              <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 flex items-center justify-between gap-2 text-xs">
+                <span className="text-amber-800 dark:text-amber-200 font-semibold">
+                  Nasiya uchun mijozni tanlang
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCheckoutModalOpen(false);
+                    setCustomerModalOpen(true);
+                  }}
+                  className="px-3 py-1.5 rounded-lg bg-amber-600 text-white font-bold shrink-0"
+                >
+                  Tanlash
+                </button>
+              </div>
+            )}
+
+            {directMethod === 'cash' && (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-semibold text-slate-500">{t.pos.cashGiven}</span>
+                  <span className="font-mono text-emerald-600 font-bold">
+                    {t.pos.change}: {formatUzsSpaced(Math.max(0, directCashGiven - finalTotal))}
+                  </span>
+                </div>
+                <input
+                  type="number"
+                  min={0}
+                  step={1000}
+                  value={directCashGiven}
+                  onChange={(e) => setDirectCashGiven(Math.max(0, Number(e.target.value)))}
+                  className="w-full h-11 px-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 font-mono text-base font-bold text-right"
+                />
+              </div>
+            )}
+
+            <input
+              value={directSaleNote}
+              onChange={(e) => setDirectSaleNote(e.target.value)}
+              placeholder="Izoh (ixtiyoriy)"
+              className="w-full h-10 px-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-xs"
+            />
+
+            <div className="grid grid-cols-2 gap-2.5 pt-1">
+              <button
+                type="button"
+                disabled={isSubmitting}
+                onClick={() => {
+                  setCheckoutModalOpen(false);
+                  void handleProceedToPayment();
+                }}
+                className="h-11 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-700 dark:text-slate-200"
+              >
+                {t.pos.hold} / Aralash
+              </button>
+              <button
+                type="button"
+                disabled={
+                  isSubmitting ||
+                  (directMethod === 'debt' && !cartCustomerId) ||
+                  (directMethod === 'cash' && directCashGiven < finalTotal)
+                }
+                onClick={handleConfirmDirectSale}
+                className="h-11 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-bold inline-flex items-center justify-center gap-2"
+              >
+                <CheckCircle2 className="w-4 h-4" />
+                <span>{isSubmitting ? 'Saqlanmoqda...' : 'Tasdiqlash'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Completed Sale Receipt Modal */}
+      {completedReceipt && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4">
+          <div className="w-full sm:max-w-md bg-white dark:bg-slate-900 rounded-t-3xl sm:rounded-2xl p-5 pb-safe space-y-4 shadow-2xl max-h-[92vh] overflow-y-auto">
+            <div className="text-center space-y-1.5">
+              <div className="w-12 h-12 rounded-full bg-emerald-100 dark:bg-emerald-950/60 text-emerald-600 flex items-center justify-center mx-auto">
+                <CheckCircle2 className="w-7 h-7" />
+              </div>
+              <h3 className="font-display text-lg font-bold text-slate-900 dark:text-white">
+                Sotuv muvaffaqiyatli yakunlandi!
+              </h3>
+              <p className="text-xs text-slate-500 font-mono">
+                {completedReceipt.sale.receiptNumber} · Sotuvchi: {completedReceipt.sale.cashierName}
+              </p>
+            </div>
+
+            <div className="p-4 rounded-2xl bg-slate-50 text-slate-900 border border-slate-200 font-mono text-[11px] space-y-1.5 max-h-60 overflow-y-auto">
+              <div className="text-center font-bold text-xs">{db.settings.brandName}</div>
+              <div className="border-t border-dashed border-slate-300 my-1" />
+              <div>Chek: {completedReceipt.sale.receiptNumber}</div>
+              <div>Sana: {formatDateTime(completedReceipt.sale.paidAt || completedReceipt.sale.createdAt, language)}</div>
+              <div>Sotuvchi: {completedReceipt.sale.cashierName}</div>
+              <div className="border-t border-dashed border-slate-300 my-1" />
+              {completedReceipt.sale.items.map((it) => (
+                <div key={it.id} className="flex justify-between gap-2">
+                  <span className="truncate">
+                    {it.productName} {it.variantLabel ? `(${it.variantLabel})` : ''} ×{it.qty}
+                  </span>
+                  <span className="shrink-0 font-bold">{formatUzsSpaced(it.lineTotal)}</span>
+                </div>
+              ))}
+              <div className="border-t border-dashed border-slate-300 my-1" />
+              <div className="flex justify-between font-bold text-xs">
+                <span>JAMI</span>
+                <span>{formatUzsSpaced(completedReceipt.sale.totalAmount)}</span>
+              </div>
+              {completedReceipt.qrUrl && (
+                <div className="flex justify-center pt-1.5">
+                  <img src={completedReceipt.qrUrl} alt="Chek QR" className="w-20 h-20" />
+                </div>
+              )}
+            </div>
+
+            <div className="grid grid-cols-2 gap-2.5">
+              <button
+                type="button"
+                onClick={() => handlePrintReceipt(completedReceipt.sale)}
+                className="h-11 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-bold inline-flex items-center justify-center gap-1.5"
+              >
+                <Printer className="w-4 h-4" />
+                <span>{t.pos.printReceipt}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => handleShareReceipt(completedReceipt.sale)}
+                className="h-11 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-bold inline-flex items-center justify-center gap-1.5"
+              >
+                <Share2 className="w-4 h-4" />
+                <span>{t.pos.share}</span>
+              </button>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setCompletedReceipt(null)}
+              className="w-full h-12 rounded-2xl bg-blue-600 hover:bg-blue-700 text-white text-sm font-bold inline-flex items-center justify-center gap-2"
+            >
+              <Plus className="w-4 h-4" />
+              <span>{t.pos.newSale}</span>
+            </button>
           </div>
         </div>
       )}

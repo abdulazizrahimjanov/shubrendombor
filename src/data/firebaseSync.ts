@@ -289,7 +289,8 @@ export function mapAppPermissionsToRuleTokens(
   const has = (p: Permission) => perms.includes(p);
   if (has('edit_catalog') || has('bulk_edit_prices')) tokens.add('manage_products');
   if (has('manage_inventory')) tokens.add('manage_stock');
-  if (has('use_pos') || has('manage_shifts') || has('manage_online_orders')) tokens.add('sell');
+  // Every active staff role receives 'sell' token automatically
+  tokens.add('sell');
   if (has('process_returns')) tokens.add('refund');
   if (has('manage_finance') || has('manage_settings')) tokens.add('manage_finance');
   if (has('manage_customers') || has('manage_debts')) tokens.add('manage_customers');
@@ -2411,10 +2412,17 @@ const WORKSPACE_WIDE_READ_COLS = new Set([
   'categories',
   'brands',
   'products',
+  'stockItems',
+  'stockMovements',
+  'sales',
+  'returns',
+  'cashShifts',
+  'cashOperations',
   'suppliers',
   'accounts',
   'customers',
   'loyaltyAccounts',
+  'debts',
   'promoCodes',
   'staffDirectory',
 ]);
@@ -3589,15 +3597,17 @@ export async function pushSyncItemToFirestore(
           .filter(Boolean) as StockMovement[];
 
         await runTransaction(firestoreDb, async (tx) => {
-          // 1. Idempotency check
+          // 1. Idempotency check (both syncedOp marker & existing sale document)
           const opSnap = await tx.get(syncedOpRef);
           if (opSnap.exists()) return;
 
           const saleRef = doc(firestoreDb, wsPath, 'sales', sanitizeId(sale.id));
+          const saleSnap = await tx.get(saleRef);
 
-          // 2. For deferred checkout, verify the sale is still deferred on server
-          if (item.type === 'sale_pay_deferred') {
-            const saleSnap = await tx.get(saleRef);
+          // 2. Prevent duplicate direct sale writes or double stock deduction
+          if (item.type === 'sale') {
+            if (saleSnap.exists()) return;
+          } else if (item.type === 'sale_pay_deferred') {
             if (!saleSnap.exists() || saleSnap.data()?.status !== 'deferred') {
               throw new BusinessRuleError("Ushbu kechiktirilgan chek allaqachon to'langan yoki topilmadi.");
             }

@@ -704,6 +704,10 @@ export const TransactionDetailPage: React.FC = () => {
                 </span>
               </div>
               <div className="flex justify-between">
+                <span className="text-slate-500">Sotuv ID</span>
+                <span className="font-mono text-slate-700 dark:text-slate-300">{sale.id}</span>
+              </div>
+              <div className="flex justify-between">
                 <span className="text-slate-500">{t.common.date}</span>
                 <span className="font-mono">{formatDateTime(sale.paidAt || sale.createdAt, language)}</span>
               </div>

@@ -48,11 +48,13 @@ function getDayHeading(dayKey: string, todayLabel: string, yesterdayLabel: strin
 export const TransactionsPage: React.FC = () => {
   const db = useAppStore((s) => s.db);
   const activeStoreId = useAppStore((s) => s.activeStoreId);
+  const currentUser = useAppStore((s) => s.getCurrentUser());
   const t = useT();
   const navigate = useNavigate();
 
   const [rawSearch, setRawSearch] = useState('');
   const [search, setSearch] = useState('');
+  const [viewScope, setViewScope] = useState<'all' | 'mine'>('all');
 
   // Filters
   const [filterOpen, setFilterOpen] = useState(false);
@@ -94,6 +96,7 @@ export const TransactionsPage: React.FC = () => {
         if (methodFilter !== 'all' && !s.payments.some((p) => p.method === methodFilter)) {
           return false;
         }
+        if (viewScope === 'mine' && currentUser && s.cashierId !== currentUser.id) return false;
         if (sellerFilter !== 'all' && s.cashierId !== sellerFilter) return false;
         if (minVal !== null && s.totalAmount < minVal) return false;
         if (maxVal !== null && s.totalAmount > maxVal) return false;
@@ -104,8 +107,14 @@ export const TransactionsPage: React.FC = () => {
         if (search) {
           const hit =
             s.receiptNumber.toLowerCase().includes(search) ||
+            s.id.toLowerCase().includes(search) ||
             (s.customerName?.toLowerCase().includes(search) ?? false) ||
-            s.cashierName.toLowerCase().includes(search);
+            s.cashierName.toLowerCase().includes(search) ||
+            s.items.some(
+              (it) =>
+                it.productName.toLowerCase().includes(search) ||
+                it.sku.toLowerCase().includes(search)
+            );
           if (!hit) return false;
         }
         return true;
@@ -116,6 +125,8 @@ export const TransactionsPage: React.FC = () => {
     storeFilter,
     statusFilter,
     methodFilter,
+    viewScope,
+    currentUser,
     sellerFilter,
     minAmount,
     maxAmount,
@@ -126,7 +137,7 @@ export const TransactionsPage: React.FC = () => {
 
   useEffect(() => {
     setVisibleCount(14);
-  }, [search, statusFilter, methodFilter, storeFilter, sellerFilter, minAmount, maxAmount, dateFrom, dateTo]);
+  }, [search, viewScope, statusFilter, methodFilter, storeFilter, sellerFilter, minAmount, maxAmount, dateFrom, dateTo]);
 
   const visibleSales = useMemo(
     () => filteredSales.slice(0, visibleCount),
@@ -239,6 +250,34 @@ export const TransactionsPage: React.FC = () => {
         </button>
       </div>
 
+      {/* Scope Toggle: All Sales vs My Sales */}
+      {currentUser && (
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setViewScope('all')}
+            className={`h-9 px-3.5 rounded-xl text-xs font-semibold border transition-colors ${
+              viewScope === 'all'
+                ? 'bg-blue-600 text-white border-blue-600'
+                : 'bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-800'
+            }`}
+          >
+            Barcha sotuvlar
+          </button>
+          <button
+            type="button"
+            onClick={() => setViewScope('mine')}
+            className={`h-9 px-3.5 rounded-xl text-xs font-semibold border transition-colors ${
+              viewScope === 'mine'
+                ? 'bg-blue-600 text-white border-blue-600'
+                : 'bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-800'
+            }`}
+          >
+            Mening sotuvlarim
+          </button>
+        </div>
+      )}
+
       {/* Day-grouped Transaction List */}
       {groupedByDay.length === 0 ? (
         <div className="py-16 text-center space-y-2">
@@ -290,12 +329,22 @@ export const TransactionsPage: React.FC = () => {
                           )}
                         </div>
 
-                        <div className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+                        <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
                           <span className="font-mono tabular-nums">{formatTimeHMS(sale.createdAt)}</span>
                           <span className="px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 text-[11px] font-semibold">
                             {units} {t.transactions.units}
                           </span>
+                          <span className="text-[11px] font-medium text-slate-600 dark:text-slate-300 truncate max-w-[140px]">
+                            {sale.cashierName}
+                          </span>
                         </div>
+                        {sale.items[0] && (
+                          <div className="text-[11px] text-slate-400 dark:text-slate-500 truncate">
+                            {sale.items[0].productName}
+                            {sale.items[0].variantLabel ? ` (${sale.items[0].variantLabel})` : ''}
+                            {sale.items.length > 1 ? ` +${sale.items.length - 1}` : ''}
+                          </div>
+                        )}
                       </div>
 
                       {/* Right column */}

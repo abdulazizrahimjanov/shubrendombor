@@ -132,7 +132,7 @@ export function createSeedDatabase(): DatabaseSnapshot {
       id: 'warehouse',
       nameUz: 'Omborchi',
       nameRu: 'Кладовщик',
-      permissions: ['view_dashboard', 'view_catalog', 'edit_catalog', 'view_inventory', 'manage_inventory', 'manage_online_orders'],
+      permissions: ['view_dashboard', 'use_pos', 'view_catalog', 'edit_catalog', 'view_inventory', 'manage_inventory', 'manage_online_orders'],
     },
   ];
 

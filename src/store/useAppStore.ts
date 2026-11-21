@@ -164,6 +164,7 @@ interface AppState {
   // Stock Helper
   getVariantStock: (variantId: string, warehouseId?: string) => number;
   getWarehouseForStore: (storeId?: string) => string;
+  getSharedWarehouseId: () => string;
 
   // Mutations
   upsertProduct: (product: Product) => Promise<{ ok: boolean; error?: string }>;
@@ -212,6 +213,8 @@ interface AppState {
   ) => Promise<Sale>;
   deleteDeferredTransaction: (saleId: string) => Promise<void>;
   completeSale: (input: {
+    saleId?: string;
+    idempotencyKey?: string;
     storeId: string;
     warehouseId: string;
     items: SaleItem[];
@@ -221,6 +224,8 @@ interface AppState {
     loyaltyPointsSpent: number;
     promoCode?: string;
     payments: { method: PaymentMethod; amount: number }[];
+    cashGiven?: number;
+    changeAmount?: number;
     note?: string;
   }) => Promise<Sale>;
   processReturn: (input: {
@@ -1324,6 +1329,8 @@ export const useAppStore = create<AppState>((set, get) => {
       const { db } = get();
       const user = get().getCurrentUser();
       if (!db || !user) return false;
+      // Every active logged-in employee (owner, admin, manager, cashier, warehouse, guard, custom roles) can sell
+      if (perm === 'use_pos') return true;
       if (user.roleId === 'owner') return true;
       if (Array.isArray(user.customPermissions)) {
         return user.customPermissions.includes(perm);
@@ -1577,6 +1584,13 @@ export const useAppStore = create<AppState>((set, get) => {
       const targetStoreId = storeId && storeId !== 'all' ? storeId : activeStoreId !== 'all' ? activeStoreId : db.stores[0]?.id;
       const store = db.stores.find((s) => s.id === targetStoreId) ?? db.stores[0];
       return store?.defaultWarehouseId ?? db.warehouses[0]?.id ?? 'wh-chilonzor';
+    },
+
+    getSharedWarehouseId: () => {
+      const { db } = get();
+      if (!db) return 'wh-chilonzor';
+      const main = db.warehouses.find((w) => w.isMain) ?? db.warehouses[0];
+      return main?.id ?? 'wh-chilonzor';
     },
 
     upsertProduct: async (product) => {
@@ -2320,9 +2334,12 @@ export const useAppStore = create<AppState>((set, get) => {
         }
       }
       const user = get().getCurrentUser();
+      const saleId = input.saleId || uid('sale');
+      const alreadyExists = db.sales.find((s) => s.id === saleId);
+      if (alreadyExists) return alreadyExists;
+
       const nextDb: DatabaseSnapshot = structuredClone(db);
       const nowIso = new Date().toISOString();
-      const saleId = uid('sale');
 
       const storeIdx = Math.max(0, nextDb.stores.findIndex((s) => s.id === input.storeId));
       const store = nextDb.stores[storeIdx];
@@ -2552,6 +2569,8 @@ export const useAppStore = create<AppState>((set, get) => {
         payments,
         paidAmount,
         debtAmount,
+        ...(input.cashGiven !== undefined ? { cashGiven: input.cashGiven } : {}),
+        ...(input.changeAmount !== undefined ? { changeAmount: input.changeAmount } : {}),
         paidAt: nowIso,
         status: 'completed',
         offlineCreated: !isOnline,
@@ -2568,7 +2587,7 @@ export const useAppStore = create<AppState>((set, get) => {
       await syncOrEnqueue(
         nextDb,
         {
-          id: uid('sync'),
+          id: input.idempotencyKey || uid('sync'),
           type: 'sale',
           payload: {
             saleId,
@@ -3561,7 +3580,7 @@ export const useAppStore = create<AppState>((set, get) => {
           createdBy: currentUser?.id ?? 'system',
         };
         if (!options?.clearCustomPermissions && userUpdates?.customPermissions) {
-          newUser.customPermissions = userUpdates.customPermissions;
+          newUser.customPermissions = Array.from(new Set<Permission>([...userUpdates.customPermissions, 'use_pos']));
         }
         nextDb.users.push(newUser);
       }
@@ -4061,7 +4080,7 @@ export const useAppStore = create<AppState>((set, get) => {
       if (!db || (!get().can('manage_settings') && !get().can('manage_employees'))) return;
       const nextDb: DatabaseSnapshot = structuredClone(db);
       const role = nextDb.roles.find((r) => r.id === roleId);
-      if (role) role.permissions = permissions;
+      if (role) role.permissions = Array.from(new Set<Permission>([...permissions, 'use_pos']));
       await syncOrEnqueue(nextDb, {
         id: uid('sync'),
         type: 'roles',
@@ -4106,7 +4125,7 @@ export const useAppStore = create<AppState>((set, get) => {
         ...role,
         nameUz: cleanUz.slice(0, 80),
         nameRu: cleanRu.slice(0, 80),
-        permissions: role.permissions.slice(0, 30),
+        permissions: Array.from(new Set<Permission>([...role.permissions, 'use_pos'])).slice(0, 30),
       };
       const idx = nextDb.roles.findIndex((r) => r.id === savedRole.id);
       if (idx >= 0) nextDb.roles[idx] = savedRole;
