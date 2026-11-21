@@ -138,6 +138,22 @@ export const CatalogPage: React.FC = () => {
     });
   }, [db, categoryFilter, brandFilter, search]);
 
+  const stockByVariant = useMemo(() => {
+    const map = new Map<string, number>();
+    if (!db) return map;
+    const targetWhId =
+      activeStoreId !== 'all'
+        ? db.stores.find((st) => st.id === activeStoreId)?.defaultWarehouseId
+        : undefined;
+    for (const st of db.stockItems) {
+      if (targetWhId && st.warehouseId !== targetWhId) continue;
+      map.set(st.variantId, (map.get(st.variantId) ?? 0) + st.qty);
+    }
+    return map;
+  }, [db, activeStoreId]);
+
+  const getCatalogVariantStock = (variantId: string) => stockByVariant.get(variantId) ?? 0;
+
   if (!db) return null;
 
   const getCategoryName = (id: string) => {
@@ -362,6 +378,7 @@ export const CatalogPage: React.FC = () => {
   const handlePhotoFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || !editingProduct) return;
+    const targetProductId = editingProduct.id;
     const reader = new FileReader();
     reader.onload = () => {
       const result = typeof reader.result === 'string' ? reader.result : '';
@@ -374,11 +391,18 @@ export const CatalogPage: React.FC = () => {
           [480, 0.56],
           [400, 0.46],
           [320, 0.36],
+          [240, 0.3],
         ];
         const canvas = document.createElement('canvas');
         const ctx = canvas.getContext('2d');
         if (!ctx) {
-          setEditingProduct((prev) => (prev ? { ...prev, photoUrl: result.slice(0, 140000) } : prev));
+          if (result.length > 140000) {
+            notify("Rasm hajmi juda katta, kichikroq rasm tanlang", 'error');
+            return;
+          }
+          setEditingProduct((prev) =>
+            prev && prev.id === targetProductId ? { ...prev, photoUrl: result } : prev
+          );
           return;
         }
         let compressed = '';
@@ -400,10 +424,16 @@ export const CatalogPage: React.FC = () => {
           compressed = canvas.toDataURL('image/jpeg', quality);
           if (compressed.length <= 140000) break;
         }
-        setEditingProduct((prev) => (prev ? { ...prev, photoUrl: compressed } : prev));
+        if (!compressed || compressed.length > 140000) {
+          notify("Rasm hajmi juda katta (140 KB dan oshmasligi kerak)", 'error');
+          return;
+        }
+        setEditingProduct((prev) =>
+          prev && prev.id === targetProductId ? { ...prev, photoUrl: compressed } : prev
+        );
       };
       img.onerror = () => {
-        setEditingProduct((prev) => (prev ? { ...prev, photoUrl: result } : prev));
+        notify("Rasm faylini o'qib bo'lmadi — boshqa rasm tanlang", 'error');
       };
       img.src = result;
     };
@@ -734,7 +764,7 @@ export const CatalogPage: React.FC = () => {
                 </tr>
               ) : (
                 filteredProducts.map((p) => {
-                  const totalStock = p.variants.reduce((sum, v) => sum + getVariantStock(v.id), 0);
+                  const totalStock = p.variants.reduce((sum, v) => sum + getCatalogVariantStock(v.id), 0);
                   const minStock = p.variants.reduce((sum, v) => sum + v.minStock, 0);
                   const isLow = totalStock <= minStock;
                   const expanded = isProductExpanded(p.id);
@@ -851,7 +881,7 @@ export const CatalogPage: React.FC = () => {
                       {/* Billz-Style Per-Size & Color Variant Sub-Rows */}
                       {expanded &&
                         p.variants.map((v) => {
-                          const vStock = getVariantStock(v.id);
+                          const vStock = getCatalogVariantStock(v.id);
                           const vLow = vStock <= v.minStock;
                           const matchedSearch =
                             search &&

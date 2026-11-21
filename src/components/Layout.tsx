@@ -27,8 +27,6 @@ import {
   Info,
   Check,
   ChevronRight,
-  Cloud,
-  RefreshCw,
 } from 'lucide-react';
 import { useAppStore } from '../store/useAppStore';
 import { useT } from '../i18n';
@@ -72,16 +70,6 @@ export const Layout: React.FC = () => {
   const currentUser = useAppStore((s) => s.getCurrentUser());
   const can = useAppStore((s) => s.can);
   const canAccessStore = useAppStore((s) => s.canAccessStore);
-  const isOnline = useAppStore((s) => s.isOnline);
-  const syncStatus = useAppStore((s) => s.syncStatus);
-  const cloudConnected = useAppStore((s) => s.cloudConnected);
-  const cloudConnecting = useAppStore((s) => s.cloudConnecting);
-  const cloudError = useAppStore((s) => s.cloudError);
-  const firebaseEmail = useAppStore((s) => s.firebaseEmail);
-  const lastSyncAt = useAppStore((s) => s.lastSyncAt);
-  const pendingQueueCount = useAppStore((s) => s.db?.offlineQueue.length ?? 0);
-  const forceSyncNow = useAppStore((s) => s.forceSyncNow);
-  const loginWithGoogle = useAppStore((s) => s.loginWithGoogle);
   const activeStoreId = useAppStore((s) => s.activeStoreId);
   const setActiveStoreId = useAppStore((s) => s.setActiveStoreId);
   const language = useAppStore((s) => s.language);
@@ -306,76 +294,6 @@ export const Layout: React.FC = () => {
             </div>
 
             <div className="flex items-center gap-2 shrink-0">
-              <button
-                type="button"
-                disabled={cloudConnecting || syncStatus === 'syncing'}
-                onClick={async () => {
-                  if (!cloudConnected && isOnline) {
-                    const res = await loginWithGoogle({ linkOnly: true });
-                    if (res.ok) notify(t.common.cloudSynced, 'success');
-                    else if (res.error) notify(res.error, 'error');
-                    return;
-                  }
-                  const res = await forceSyncNow();
-                  if (res.ok) {
-                    notify(
-                      res.synced > 0
-                        ? `${res.synced} ta yozuv sinxronlandi`
-                        : "Firebase bazasi bilan sinxron holatda",
-                      'success'
-                    );
-                  } else if (res.error) {
-                    notify(res.error, 'error');
-                  }
-                }}
-                title={cloudError || (lastSyncAt ? `${t.common.lastSyncedLabel}: ${new Date(lastSyncAt).toLocaleTimeString()}` : t.common.syncNow)}
-                className={`inline-flex items-center gap-1.5 px-2 sm:px-2.5 h-8 rounded-lg border text-[11px] font-medium whitespace-nowrap transition-colors ${
-                  !isOnline
-                    ? 'border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/50 text-amber-700 dark:text-amber-300'
-                    : syncStatus === 'syncing' || cloudConnecting
-                    ? 'border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950/50 text-blue-700 dark:text-blue-300'
-                    : cloudError
-                    ? 'border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950/50 text-red-700 dark:text-red-300'
-                    : cloudConnected
-                    ? 'border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300'
-                    : 'border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200'
-                }`}
-              >
-                <span
-                  className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                    !isOnline
-                      ? 'bg-amber-500'
-                      : syncStatus === 'syncing' || cloudConnecting
-                      ? 'bg-blue-500 animate-pulse'
-                      : cloudError
-                      ? 'bg-red-500'
-                      : cloudConnected
-                      ? 'bg-emerald-500'
-                      : 'bg-slate-400'
-                  }`}
-                />
-                <span className="hidden sm:inline">
-                  {!isOnline
-                    ? `${t.common.offlineShort}${pendingQueueCount > 0 ? ` (${pendingQueueCount})` : ''}`
-                    : syncStatus === 'syncing' || cloudConnecting
-                    ? t.common.syncing
-                    : cloudError
-                    ? t.common.syncNow
-                    : cloudConnected
-                    ? t.common.cloudSynced
-                    : t.common.cloudNotLinked}
-                </span>
-                <span className="sm:hidden">
-                  {!isOnline
-                    ? 'Offline'
-                    : syncStatus === 'syncing' || cloudConnecting
-                    ? '...'
-                    : cloudConnected
-                    ? '15s'
-                    : 'Cloud'}
-                </span>
-              </button>
-
               {accessibleStores.length > 0 && (
                 <div className="hidden md:flex items-center gap-1.5 border border-slate-200 dark:border-slate-700 rounded-xl px-2.5 h-9 bg-slate-50 dark:bg-slate-950">
                   <span
@@ -655,36 +573,6 @@ export const Layout: React.FC = () => {
                   <span>Parol va PIN-kodni almashtirish</span>
                 </span>
                 <ChevronRight className="w-4 h-4 text-slate-400" />
-              </button>
-
-              <button
-                type="button"
-                onClick={async () => {
-                  if (!cloudConnected) {
-                    const res = await loginWithGoogle({ linkOnly: true });
-                    if (res.ok) notify(t.common.cloudSynced, 'success');
-                    else if (res.error) notify(res.error, 'error');
-                  } else {
-                    const res = await forceSyncNow();
-                    if (res.ok) notify("Firebase bazasi bilan sinxronlandi", 'success');
-                    else if (res.error) notify(res.error, 'error');
-                  }
-                }}
-                className="w-full px-4 py-3.5 flex items-center justify-between text-sm font-semibold text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800/60"
-              >
-                <span className="flex items-center gap-3 min-w-0">
-                  {cloudConnected ? (
-                    <RefreshCw className={`w-4 h-4 text-emerald-600 shrink-0 ${syncStatus === 'syncing' ? 'animate-spin' : ''}`} />
-                  ) : (
-                    <Cloud className="w-4 h-4 text-amber-600 shrink-0" />
-                  )}
-                  <span className="truncate">
-                    {cloudConnected
-                      ? `${t.common.cloudSynced}${firebaseEmail ? ` (${firebaseEmail})` : ''}`
-                      : t.common.connectCloud}
-                  </span>
-                </span>
-                <ChevronRight className="w-4 h-4 text-slate-400 shrink-0" />
               </button>
 
               <button

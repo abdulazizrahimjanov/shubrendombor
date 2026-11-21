@@ -1,13 +1,11 @@
 import React, { useState } from 'react';
-import { Phone, Lock, Eye, EyeOff, ArrowRight, Globe, Sun, Moon, Store as StoreIcon, Cloud, Loader2 } from 'lucide-react';
+import { Phone, Lock, Eye, EyeOff, ArrowRight, Globe, Sun, Moon, Store as StoreIcon, Loader2 } from 'lucide-react';
 import { useAppStore } from '../store/useAppStore';
 import { useT } from '../i18n';
 import { PWAInstallButton } from './PWAInstallButton';
 
 export const AuthScreen: React.FC<{ onOpenCatalog?: () => void }> = ({ onOpenCatalog }) => {
   const loginWithPhone = useAppStore((s) => s.loginWithPhone);
-  const loginWithGoogle = useAppStore((s) => s.loginWithGoogle);
-  const cloudConnecting = useAppStore((s) => s.cloudConnecting);
   const cloudError = useAppStore((s) => s.cloudError);
   const clearCloudError = useAppStore((s) => s.clearCloudError);
   const language = useAppStore((s) => s.language);
@@ -19,23 +17,23 @@ export const AuthScreen: React.FC<{ onOpenCatalog?: () => void }> = ({ onOpenCat
   const [phone, setPhone] = useState('');
   const [password, setPassword] = useState('');
   const [showSecret, setShowSecret] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setError('');
-    const ok = loginWithPhone(phone.trim(), password.trim());
-    if (!ok) {
-      setError(t.auth.invalidCredentials);
-    }
-  };
-
-  const handleGoogleLogin = async () => {
+    if (submitting) return;
     setError('');
     clearCloudError();
-    const res = await loginWithGoogle();
-    if (!res.ok && res.error) {
-      setError(res.error);
+    setSubmitting(true);
+    try {
+      const ok = await loginWithPhone(phone.trim(), password.trim());
+      if (!ok) {
+        const latestCloudError = useAppStore.getState().cloudError;
+        setError(latestCloudError || t.auth.invalidCredentials);
+      }
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -146,55 +144,27 @@ export const AuthScreen: React.FC<{ onOpenCatalog?: () => void }> = ({ onOpenCat
               </div>
             </div>
 
-            {error && (
+            {(error || (cloudError && cloudError !== error)) && (
               <p className="text-xs font-medium text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/50 border border-red-200 dark:border-red-900 rounded-lg px-3 py-2">
-                {error}
+                {error || cloudError}
               </p>
             )}
 
             <button
               type="submit"
-              className="w-full h-11 rounded-xl bg-teal-700 hover:bg-teal-800 text-white text-sm font-semibold flex items-center justify-center gap-2 transition-colors"
+              disabled={submitting}
+              className="w-full h-11 rounded-xl bg-teal-700 hover:bg-teal-800 disabled:opacity-60 text-white text-sm font-semibold flex items-center justify-center gap-2 transition-colors"
             >
-              <span>{t.auth.signIn}</span>
-              <ArrowRight className="w-4 h-4" />
+              {submitting ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <>
+                  <span>{t.auth.signIn}</span>
+                  <ArrowRight className="w-4 h-4" />
+                </>
+              )}
             </button>
           </form>
-
-          <div className="relative">
-            <div className="absolute inset-0 flex items-center">
-              <div className="w-full border-t border-slate-200 dark:border-slate-800" />
-            </div>
-            <div className="relative flex justify-center text-xs">
-              <span className="bg-white dark:bg-slate-900 px-2.5 text-slate-400">
-                {language === 'uz' ? 'yoki' : 'или'}
-              </span>
-            </div>
-          </div>
-
-          <div className="space-y-2">
-            <button
-              type="button"
-              disabled={cloudConnecting}
-              onClick={handleGoogleLogin}
-              className="w-full h-11 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 hover:bg-slate-50 dark:hover:bg-slate-800/80 text-slate-800 dark:text-slate-100 text-sm font-semibold flex items-center justify-center gap-2.5 transition-colors disabled:opacity-60"
-            >
-              {cloudConnecting ? (
-                <Loader2 className="w-4 h-4 animate-spin text-teal-600" />
-              ) : (
-                <Cloud className="w-4 h-4 text-teal-600" />
-              )}
-              <span>{t.auth.googleSignIn}</span>
-            </button>
-            {cloudError && cloudError !== error && (
-              <p className="text-xs font-medium text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/50 border border-amber-200 dark:border-amber-900 rounded-lg px-3 py-2">
-                {cloudError}
-              </p>
-            )}
-            <p className="text-[11px] text-center text-slate-500 dark:text-slate-400">
-              {t.auth.googleSignInDesc} · {t.auth.cloudSyncHint}
-            </p>
-          </div>
         </div>
       </div>
 

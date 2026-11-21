@@ -225,6 +225,8 @@ export const TransactionDetailPage: React.FC = () => {
       const qrUrl = await generateSaleQr(updatedSale, db.settings.showReceiptQr);
       setPaidSuccessSale({ sale: updatedSale, qrUrl });
       notify(`Tranzaksiya ${updatedSale.receiptNumber} to'landi`, 'success');
+    } catch (err) {
+      notify(err instanceof Error ? err.message : "To'lovni yakunlashda xatolik yuz berdi", 'error');
     } finally {
       setIsSubmitting(false);
     }
@@ -274,32 +276,39 @@ export const TransactionDetailPage: React.FC = () => {
 
   const handleQuickCreateCustomer = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newCustName.trim()) return;
+    if (isSubmitting || !newCustName.trim()) return;
     const cleanPhone = newCustPhone.trim();
     if (cleanPhone.replace(/\D/g, '').length < 9) {
       notify("To'liq telefon raqamini kiriting", 'error');
       return;
     }
-    const nowIso = new Date().toISOString();
-    const created = await upsertCustomer({
-      id: uid('cust'),
-      name: newCustName.trim(),
-      phone: cleanPhone,
-      tags: [],
-      segment: 'new',
-      totalSpent: 0,
-      ordersCount: 0,
-      debtBalance: 0,
-      storeId: sale.storeId,
-      createdAt: nowIso,
-      updatedAt: nowIso,
-      createdBy: currentUser?.id ?? 'system',
-    });
-    setOverrideCustomerId(created.id);
-    setNewCustomerModalOpen(false);
-    setNewCustName('');
-    setNewCustPhone('+99890');
-    notify(`Mijoz "${created.name}" qo'shildi va tanlandi`, 'success');
+    setIsSubmitting(true);
+    try {
+      const nowIso = new Date().toISOString();
+      const created = await upsertCustomer({
+        id: uid('cust'),
+        name: newCustName.trim(),
+        phone: cleanPhone,
+        tags: [],
+        segment: 'new',
+        totalSpent: 0,
+        ordersCount: 0,
+        debtBalance: 0,
+        storeId: sale.storeId,
+        createdAt: nowIso,
+        updatedAt: nowIso,
+        createdBy: currentUser?.id ?? 'system',
+      });
+      setOverrideCustomerId(created.id);
+      setNewCustomerModalOpen(false);
+      setNewCustName('');
+      setNewCustPhone('+99890');
+      notify(`Mijoz "${created.name}" qo'shildi va tanlandi`, 'success');
+    } catch (err) {
+      notify(err instanceof Error ? err.message : "Mijoz qo'shishda xatolik", 'error');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -770,12 +779,21 @@ export const TransactionDetailPage: React.FC = () => {
               <div className="grid grid-cols-2 gap-3">
                 <button
                   type="button"
+                  disabled={isSubmitting}
                   onClick={async () => {
-                    await deleteDeferredTransaction(sale.id);
-                    notify("Kechiktirilgan tranzaksiya o'chirildi", 'info');
-                    navigate('/transactions');
+                    if (isSubmitting) return;
+                    setIsSubmitting(true);
+                    try {
+                      await deleteDeferredTransaction(sale.id);
+                      notify("Kechiktirilgan tranzaksiya o'chirildi", 'info');
+                      navigate('/transactions');
+                    } catch (err) {
+                      notify(err instanceof Error ? err.message : "Tranzaksiyani o'chirishda xatolik", 'error');
+                    } finally {
+                      setIsSubmitting(false);
+                    }
                   }}
-                  className="h-12 rounded-2xl border border-red-200 dark:border-red-900/60 text-red-600 text-xs font-bold inline-flex items-center justify-center gap-1.5"
+                  className="h-12 rounded-2xl border border-red-200 dark:border-red-900/60 disabled:opacity-50 text-red-600 text-xs font-bold inline-flex items-center justify-center gap-1.5"
                 >
                   <Trash2 className="w-4 h-4" />
                   <span>{t.common.delete}</span>
@@ -1021,6 +1039,8 @@ export const TransactionDetailPage: React.FC = () => {
                   } else {
                     notify("Qaytarish rasmiylashtirildi", 'success');
                   }
+                } catch (err) {
+                  notify(err instanceof Error ? err.message : 'Qaytarishda xatolik yuz berdi', 'error');
                 } finally {
                   setIsSubmitting(false);
                 }

@@ -50,6 +50,8 @@ export const ProductThumb: React.FC<{
     <img
       src={src}
       alt={name}
+      loading="lazy"
+      decoding="async"
       referrerPolicy="no-referrer"
       onError={() => setErrored(true)}
       className={`${className} object-cover bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 shrink-0`}

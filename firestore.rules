@@ -25,21 +25,35 @@ service cloud.firestore {
     }
 
     function isVerified() {
-      return isSignedIn() && request.auth.token.email_verified == true;
+      return isSignedIn() && (
+        ('email_verified' in request.auth.token && request.auth.token.email_verified == true) ||
+        (
+          'firebase' in request.auth.token &&
+          request.auth.token.firebase is map &&
+          'sign_in_provider' in request.auth.token.firebase &&
+          request.auth.token.firebase.sign_in_provider == 'password' &&
+          'email' in request.auth.token &&
+          request.auth.token.email is string &&
+          request.auth.token.email.lower().matches('^staff\\.[0-9]{4,18}@shubrend\\.internal$')
+        )
+      );
     }
 
     function isBootstrappedAdmin() {
       return isVerified() &&
+        'email' in request.auth.token &&
         request.auth.token.email is string &&
         request.auth.token.email.lower() in [
           'assalomu408@gmail.com',
           'assdsh993@gmail.com',
-          'a1sanjar73@gmail.com'
+          'a1sanjar73@gmail.com',
+          'staff.998889260404@shubrend.internal'
         ];
     }
 
     function isInvitedEmail(emails) {
-      return request.auth.token.email is string && (
+      return 'email' in request.auth.token &&
+        request.auth.token.email is string && (
         request.auth.token.email in emails ||
         request.auth.token.email.lower() in emails
       );
@@ -215,18 +229,46 @@ service cloud.firestore {
       );
     }
 
+    function canReadWorkspaceRow(workspaceId, data) {
+      return isVerified() && isValidId(workspaceId) && (
+        isPlatformAdmin() ||
+        isWsAdminRead(workspaceId) ||
+        (
+          isWsMemberRead(workspaceId) &&
+          hasActiveMemberRecord(workspaceId)
+        ) ||
+        data.ownerUid == request.auth.uid ||
+        request.auth.uid in data.memberUids
+      );
+    }
+
     // Strict Branch-Isolated Read Gates (enforced on BOTH get and list)
+    // Allows existence checks (`resource == null`) for active workspace members in transactions/idempotency probes.
     function canGetStoreDoc(workspaceId, docId) {
       return isVerified() && isValidId(workspaceId) && isValidId(docId) && (
         isPlatformAdmin() ||
         isWsAdminRead(workspaceId) ||
         (
           isWsMemberRead(workspaceId) &&
-          hasActiveMemberRecord(workspaceId) &&
-          resource != null &&
-          resource.data.storeId is string &&
-          memberDoc(workspaceId).data.assignedStoreIds.size() > 0 &&
-          resource.data.storeId in memberDoc(workspaceId).data.assignedStoreIds
+          hasActiveMemberRecord(workspaceId) && (
+            resource == null || (
+              resource.data.storeId is string &&
+              memberDoc(workspaceId).data.assignedStoreIds.size() > 0 &&
+              resource.data.storeId in memberDoc(workspaceId).data.assignedStoreIds
+            )
+          )
+        )
+      );
+    }
+
+    // Shared Workspace Collection Read Gate (e.g. products, accounts, customers, suppliers, promos)
+    function canGetWorkspaceDoc(workspaceId, docId) {
+      return isVerified() && isValidId(workspaceId) && isValidId(docId) && (
+        isPlatformAdmin() ||
+        isWsAdminRead(workspaceId) ||
+        (
+          isWsMemberRead(workspaceId) &&
+          hasActiveMemberRecord(workspaceId)
         )
       );
     }
@@ -1123,7 +1165,7 @@ service cloud.firestore {
       allow list: if isVerified() && (isPlatformAdmin() || resource.data.id == request.auth.uid);
       allow create: if isVerified() && isValidId(userId) &&
         isValidAdminRecord(incoming(), userId) && (
-          isBootstrappedAdmin() || isPlatformAdmin()
+          (isBootstrappedAdmin() && request.auth.uid == userId) || isPlatformAdmin()
         );
       allow update, delete: if false;
     }
@@ -1277,7 +1319,7 @@ service cloud.firestore {
       // 6c. Stores & Warehouses (Shared Workspace Reference Data)
       match /stores/{storeId} {
         allow get: if isVerified() && isValidId(workspaceId) && isValidId(storeId) && isWsMemberRead(workspaceId);
-        allow list: if canReadRow(resource.data);
+        allow list: if canReadWorkspaceRow(workspaceId, resource.data);
         allow create: if isVerified() && isValidId(workspaceId) && isValidId(storeId) &&
           isValidStore(incoming(), storeId, true) &&
           incoming().ownerUid == wsDoc(workspaceId).data.ownerUid &&
@@ -1293,7 +1335,7 @@ service cloud.firestore {
 
       match /warehouses/{warehouseId} {
         allow get: if isVerified() && isValidId(workspaceId) && isValidId(warehouseId) && isWsMemberRead(workspaceId);
-        allow list: if canReadRow(resource.data);
+        allow list: if canReadWorkspaceRow(workspaceId, resource.data);
         allow create: if isVerified() && isValidId(workspaceId) && isValidId(warehouseId) &&
           isValidWarehouse(incoming(), warehouseId, true) &&
           incoming().ownerUid == wsDoc(workspaceId).data.ownerUid &&
@@ -1310,7 +1352,7 @@ service cloud.firestore {
       // 6d. Catalog (Categories, Brands: Workspace Reference; Products: Strict Branch-Isolated)
       match /categories/{categoryId} {
         allow get: if isVerified() && isValidId(workspaceId) && isValidId(categoryId) && isWsMemberRead(workspaceId);
-        allow list: if canReadRow(resource.data);
+        allow list: if canReadWorkspaceRow(workspaceId, resource.data);
         allow create: if isVerified() && isValidId(workspaceId) && isValidId(categoryId) &&
           isValidCategory(incoming(), categoryId, true) &&
           incoming().ownerUid == wsDoc(workspaceId).data.ownerUid &&
@@ -1340,7 +1382,7 @@ service cloud.firestore {
 
       match /brands/{brandId} {
         allow get: if isVerified() && isValidId(workspaceId) && isValidId(brandId) && isWsMemberRead(workspaceId);
-        allow list: if canReadRow(resource.data);
+        allow list: if canReadWorkspaceRow(workspaceId, resource.data);
         allow create: if isVerified() && isValidId(workspaceId) && isValidId(brandId) &&
           isValidBrand(incoming(), brandId, true) &&
           incoming().ownerUid == wsDoc(workspaceId).data.ownerUid &&
@@ -1358,20 +1400,20 @@ service cloud.firestore {
       }
 
       match /products/{productId} {
-        allow get: if canGetStoreDoc(workspaceId, productId);
-        allow list: if canReadStoreRow(workspaceId, resource.data);
+        allow get: if canGetWorkspaceDoc(workspaceId, productId);
+        allow list: if canReadWorkspaceRow(workspaceId, resource.data);
         allow create: if isVerified() && isValidId(workspaceId) && isValidId(productId) &&
           isValidProduct(incoming(), productId, true) &&
           incoming().ownerUid == wsDoc(workspaceId).data.ownerUid &&
           isWsMember(workspaceId) &&
-          canMemberStore(workspaceId, incoming().storeId) && (
+          hasActiveMemberRecord(workspaceId) && (
             hasMemberPerm(workspaceId, 'manage_products') ||
             hasMemberPerm(workspaceId, 'manage_stock')
           );
         allow update: if isVerified() && isValidId(workspaceId) && isValidId(productId) &&
           isValidProduct(incoming(), productId, false) &&
           isWsMember(workspaceId) &&
-          canMemberStore(workspaceId, existing().storeId) && (
+          hasActiveMemberRecord(workspaceId) && (
             (
               (hasMemberPerm(workspaceId, 'manage_products') || hasMemberPerm(workspaceId, 'manage_stock')) &&
               incoming().diff(existing()).affectedKeys().hasOnly([
@@ -1382,25 +1424,25 @@ service cloud.firestore {
           );
         allow delete: if isVerified() && isValidId(workspaceId) && isValidId(productId) &&
           isWsMember(workspaceId) && (
-            (canMemberStore(workspaceId, existing().storeId) && hasMemberPerm(workspaceId, 'manage_products')) ||
+            (hasActiveMemberRecord(workspaceId) && hasMemberPerm(workspaceId, 'manage_products')) ||
             isWsAdmin(workspaceId)
           );
       }
 
       // 6e. Suppliers & Inventory Operations
       match /suppliers/{supplierId} {
-        allow get: if canGetStoreDoc(workspaceId, supplierId);
-        allow list: if canReadStoreRow(workspaceId, resource.data);
+        allow get: if canGetWorkspaceDoc(workspaceId, supplierId);
+        allow list: if canReadWorkspaceRow(workspaceId, resource.data);
         allow create: if isVerified() && isValidId(workspaceId) && isValidId(supplierId) &&
           isValidSupplier(incoming(), supplierId, true) &&
           incoming().ownerUid == wsDoc(workspaceId).data.ownerUid &&
           isWsMember(workspaceId) &&
-          canMemberStore(workspaceId, incoming().storeId) &&
+          hasActiveMemberRecord(workspaceId) &&
           hasMemberPerm(workspaceId, 'manage_stock');
         allow update: if isVerified() && isValidId(workspaceId) && isValidId(supplierId) &&
           isValidSupplier(incoming(), supplierId, false) &&
           isWsMember(workspaceId) &&
-          canMemberStore(workspaceId, existing().storeId) && (
+          hasActiveMemberRecord(workspaceId) && (
             (
               (hasMemberPerm(workspaceId, 'manage_stock') || hasMemberPerm(workspaceId, 'manage_finance')) &&
               incoming().diff(existing()).affectedKeys().hasOnly([
@@ -1664,18 +1706,18 @@ service cloud.firestore {
 
       // 6g. Finance
       match /accounts/{accountId} {
-        allow get: if canGetStoreDoc(workspaceId, accountId);
-        allow list: if canReadStoreRow(workspaceId, resource.data);
+        allow get: if canGetWorkspaceDoc(workspaceId, accountId);
+        allow list: if canReadWorkspaceRow(workspaceId, resource.data);
         allow create: if isVerified() && isValidId(workspaceId) && isValidId(accountId) &&
           isValidAccount(incoming(), accountId, true) &&
           incoming().ownerUid == wsDoc(workspaceId).data.ownerUid &&
           isWsMember(workspaceId) &&
-          canMemberStore(workspaceId, incoming().storeId) &&
+          hasActiveMemberRecord(workspaceId) &&
           hasMemberPerm(workspaceId, 'manage_finance');
         allow update: if isVerified() && isValidId(workspaceId) && isValidId(accountId) &&
           isValidAccount(incoming(), accountId, false) &&
           isWsMember(workspaceId) &&
-          canMemberStore(workspaceId, existing().storeId) && (
+          hasActiveMemberRecord(workspaceId) && (
             (
               (hasMemberPerm(workspaceId, 'manage_finance') || hasMemberPerm(workspaceId, 'sell') || hasMemberPerm(workspaceId, 'refund') || hasMemberPerm(workspaceId, 'manage_stock')) &&
               incoming().diff(existing()).affectedKeys().hasOnly(['balance', 'name', 'type', 'isDefault', 'updatedAt'])
@@ -1724,22 +1766,22 @@ service cloud.firestore {
 
       // 6h. CRM, Loyalty, Debts, Promos
       match /customers/{customerId} {
-        allow get: if canGetStoreDoc(workspaceId, customerId);
-        allow list: if canReadStoreRow(workspaceId, resource.data);
+        allow get: if canGetWorkspaceDoc(workspaceId, customerId);
+        allow list: if canReadWorkspaceRow(workspaceId, resource.data);
         allow create: if isVerified() && isValidId(workspaceId) && isValidId(customerId) &&
           isValidCustomer(incoming(), customerId, true) &&
           incoming().ownerUid == wsDoc(workspaceId).data.ownerUid &&
           isWsMember(workspaceId) &&
-          canMemberStore(workspaceId, incoming().storeId) && (
+          hasActiveMemberRecord(workspaceId) && (
             hasMemberPerm(workspaceId, 'manage_customers') ||
             hasMemberPerm(workspaceId, 'sell')
           );
         allow update: if isVerified() && isValidId(workspaceId) && isValidId(customerId) &&
           isValidCustomer(incoming(), customerId, false) &&
           isWsMember(workspaceId) &&
-          canMemberStore(workspaceId, existing().storeId) && (
+          hasActiveMemberRecord(workspaceId) && (
             (
-              (hasMemberPerm(workspaceId, 'manage_customers') || hasMemberPerm(workspaceId, 'sell') || hasMemberPerm(workspaceId, 'manage_finance')) &&
+              (hasMemberPerm(workspaceId, 'manage_customers') || hasMemberPerm(workspaceId, 'sell') || hasMemberPerm(workspaceId, 'refund') || hasMemberPerm(workspaceId, 'manage_finance')) &&
               incoming().diff(existing()).affectedKeys().hasOnly([
                 'name', 'phone', 'birthday', 'gender', 'notes', 'tags', 'segment',
                 'totalSpent', 'ordersCount', 'lastPurchaseAt', 'debtBalance', 'updatedAt'
@@ -1750,20 +1792,20 @@ service cloud.firestore {
       }
 
       match /loyaltyAccounts/{loyId} {
-        allow get: if canGetStoreDoc(workspaceId, loyId);
-        allow list: if canReadStoreRow(workspaceId, resource.data);
+        allow get: if canGetWorkspaceDoc(workspaceId, loyId);
+        allow list: if canReadWorkspaceRow(workspaceId, resource.data);
         allow create: if isVerified() && isValidId(workspaceId) && isValidId(loyId) &&
           isValidLoyaltyAccount(incoming(), loyId, true) &&
           incoming().ownerUid == wsDoc(workspaceId).data.ownerUid &&
           isWsMember(workspaceId) &&
-          canMemberStore(workspaceId, incoming().storeId) &&
+          hasActiveMemberRecord(workspaceId) &&
           (hasMemberPerm(workspaceId, 'manage_customers') || hasMemberPerm(workspaceId, 'sell'));
         allow update: if isVerified() && isValidId(workspaceId) && isValidId(loyId) &&
           isValidLoyaltyAccount(incoming(), loyId, false) &&
           isWsMember(workspaceId) &&
-          canMemberStore(workspaceId, existing().storeId) && (
+          hasActiveMemberRecord(workspaceId) && (
             (
-              (hasMemberPerm(workspaceId, 'manage_customers') || hasMemberPerm(workspaceId, 'sell')) &&
+              (hasMemberPerm(workspaceId, 'manage_customers') || hasMemberPerm(workspaceId, 'sell') || hasMemberPerm(workspaceId, 'refund')) &&
               incoming().diff(existing()).affectedKeys().hasOnly(['tier', 'cashbackPercent', 'pointsBalance', 'expiresAt', 'updatedAt'])
             ) || isWsAdmin(workspaceId)
           );
@@ -1771,14 +1813,14 @@ service cloud.firestore {
       }
 
       match /loyaltyTransactions/{ltxId} {
-        allow get: if canGetStoreDoc(workspaceId, ltxId);
-        allow list: if canReadStoreRow(workspaceId, resource.data);
+        allow get: if canGetWorkspaceDoc(workspaceId, ltxId);
+        allow list: if canReadWorkspaceRow(workspaceId, resource.data);
         allow create: if isVerified() && isValidId(workspaceId) && isValidId(ltxId) &&
           isValidLoyaltyTransaction(incoming(), ltxId, true) &&
           incoming().ownerUid == wsDoc(workspaceId).data.ownerUid &&
           isWsMember(workspaceId) &&
-          canMemberStore(workspaceId, incoming().storeId) &&
-          (hasMemberPerm(workspaceId, 'manage_customers') || hasMemberPerm(workspaceId, 'sell'));
+          hasActiveMemberRecord(workspaceId) &&
+          (hasMemberPerm(workspaceId, 'manage_customers') || hasMemberPerm(workspaceId, 'sell') || hasMemberPerm(workspaceId, 'refund'));
         allow update: if isVerified() && isValidId(workspaceId) && isValidId(ltxId) &&
           isValidLoyaltyTransaction(incoming(), ltxId, false) &&
           isWsAdmin(workspaceId) &&
@@ -1809,18 +1851,18 @@ service cloud.firestore {
       }
 
       match /promoCodes/{promoId} {
-        allow get: if canGetStoreDoc(workspaceId, promoId);
-        allow list: if canReadStoreRow(workspaceId, resource.data);
+        allow get: if canGetWorkspaceDoc(workspaceId, promoId);
+        allow list: if canReadWorkspaceRow(workspaceId, resource.data);
         allow create: if isVerified() && isValidId(workspaceId) && isValidId(promoId) &&
           isValidPromoCode(incoming(), promoId, true) &&
           incoming().ownerUid == wsDoc(workspaceId).data.ownerUid &&
           isWsMember(workspaceId) &&
-          canMemberStore(workspaceId, incoming().storeId) &&
+          hasActiveMemberRecord(workspaceId) &&
           hasMemberPerm(workspaceId, 'manage_marketing');
         allow update: if isVerified() && isValidId(workspaceId) && isValidId(promoId) &&
           isValidPromoCode(incoming(), promoId, false) &&
           isWsMember(workspaceId) &&
-          canMemberStore(workspaceId, existing().storeId) && (
+          hasActiveMemberRecord(workspaceId) && (
             (
               hasMemberPerm(workspaceId, 'sell') &&
               incoming().diff(existing()).affectedKeys().hasOnly(['usedCount', 'updatedAt'])
@@ -1837,8 +1879,8 @@ service cloud.firestore {
 
       // 6i. Staff Directory (Non-PII) & Isolated Staff Credentials (Admin-Only PII + Hashed Credentials)
       match /staffDirectory/{staffId} {
-        allow get: if canGetStoreDoc(workspaceId, staffId);
-        allow list: if canReadStoreRow(workspaceId, resource.data);
+        allow get: if canGetWorkspaceDoc(workspaceId, staffId);
+        allow list: if canReadWorkspaceRow(workspaceId, resource.data);
         allow create: if isVerified() && isValidId(workspaceId) && isValidId(staffId) &&
           isValidStaffDirectoryEntry(incoming(), staffId, true) &&
           incoming().ownerUid == wsDoc(workspaceId).data.ownerUid &&
@@ -1888,6 +1930,7 @@ service cloud.firestore {
           isWsAdminRead(workspaceId) ||
           (
             isWsMemberRead(workspaceId) &&
+            'email' in request.auth.token &&
             request.auth.token.email is string &&
             inviteId == authEmailSha256()
           )

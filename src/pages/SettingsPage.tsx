@@ -12,12 +12,11 @@ import {
   Eye,
   EyeOff,
   Copy,
-  RefreshCw,
   AlertTriangle,
   X,
   Save,
-  Cloud,
   CloudUpload,
+  RefreshCw,
 } from 'lucide-react';
 import { useAppStore, uid } from '../store/useAppStore';
 import { useT } from '../i18n';
@@ -44,16 +43,7 @@ export const SettingsPage: React.FC = () => {
   const importBackupJson = useAppStore((s) => s.importBackupJson);
   const migrateLocalDataToCloud = useAppStore((s) => s.migrateLocalDataToCloud);
   const cloudConnected = useAppStore((s) => s.cloudConnected);
-  const cloudConnecting = useAppStore((s) => s.cloudConnecting);
-  const cloudError = useAppStore((s) => s.cloudError);
-  const firebaseEmail = useAppStore((s) => s.firebaseEmail);
-  const workspaceContext = useAppStore((s) => s.workspaceContext);
-  const lastSyncAt = useAppStore((s) => s.lastSyncAt);
-  const lastSyncCheckAt = useAppStore((s) => s.lastSyncCheckAt);
-  const syncStatus = useAppStore((s) => s.syncStatus);
   const isOnline = useAppStore((s) => s.isOnline);
-  const forceSyncNow = useAppStore((s) => s.forceSyncNow);
-  const loginWithGoogle = useAppStore((s) => s.loginWithGoogle);
   const notify = useAppStore((s) => s.notify);
   const t = useT();
 
@@ -133,7 +123,7 @@ export const SettingsPage: React.FC = () => {
           'success'
         );
       } else {
-        notify("Zaxira qurilmada tiklandi. Bulutga yuklash uchun Google orqali ulaning", 'info');
+        notify("Zaxira qurilmada tiklandi. Internetga ulanganda avtomatik sinxronlanadi", 'info');
       }
     } catch {
       notify("Fayl formati noto'g'ri", 'error');
@@ -197,101 +187,6 @@ export const SettingsPage: React.FC = () => {
 
       {tab === 'general' && (
         <div className="space-y-4 max-w-2xl text-xs">
-          {/* Firebase Cloud & 15s Sync Status */}
-          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5 space-y-3">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <Cloud className={`w-4 h-4 ${cloudConnected ? 'text-emerald-600' : 'text-amber-600'}`} />
-                <div>
-                  <div className="font-display font-bold text-sm text-slate-900 dark:text-white">
-                    Firebase bulutli sinxronlash (15 soniyalik nazorat)
-                  </div>
-                  <div className="text-[11px] text-slate-500 dark:text-slate-400">
-                    {cloudConnected
-                      ? `Ulangan (${firebaseEmail || 'Google'}) · Baza: ${workspaceContext?.workspaceId || 'ws-shubrend-main'}`
-                      : "Bulutga ulanish uchun Google hisobi bilan bog'lang"}
-                  </div>
-                </div>
-              </div>
-              <span
-                className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg font-semibold ${
-                  !isOnline
-                    ? 'bg-amber-50 dark:bg-amber-950/50 text-amber-700 dark:text-amber-300'
-                    : cloudConnected
-                    ? 'bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300'
-                    : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300'
-                }`}
-              >
-                <span className={`w-2 h-2 rounded-full ${!isOnline ? 'bg-amber-500' : cloudConnected ? 'bg-emerald-500' : 'bg-slate-400'}`} />
-                {!isOnline ? t.common.offlineShort : cloudConnected ? t.common.cloudSynced : t.common.cloudNotLinked}
-              </span>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-[11px] bg-slate-50 dark:bg-slate-950 rounded-lg p-3 border border-slate-100 dark:border-slate-800">
-              <div>
-                <div className="text-slate-400">{t.common.lastSyncedLabel}</div>
-                <div className="font-mono font-semibold mt-0.5">
-                  {lastSyncAt ? new Date(lastSyncAt).toLocaleTimeString() : '—'}
-                </div>
-              </div>
-              <div>
-                <div className="text-slate-400">15s tekshiruv</div>
-                <div className="font-mono font-semibold mt-0.5">
-                  {lastSyncCheckAt ? new Date(lastSyncCheckAt).toLocaleTimeString() : '—'}
-                </div>
-              </div>
-              <div>
-                <div className="text-slate-400">Oflayn navbat</div>
-                <div className="font-mono font-semibold mt-0.5">{db.offlineQueue.length} ta amal</div>
-              </div>
-            </div>
-
-            {cloudError && (
-              <div className="rounded-lg border border-red-200 dark:border-red-900 bg-red-50 dark:bg-red-950/40 px-3 py-2 text-red-700 dark:text-red-300">
-                {cloudError}
-              </div>
-            )}
-
-            <div className="flex flex-wrap gap-2">
-              {!cloudConnected && (
-                <button
-                  type="button"
-                  disabled={cloudConnecting}
-                  onClick={async () => {
-                    const res = await loginWithGoogle({ linkOnly: true });
-                    if (res.ok) notify("Firebase bulutiga ulandi", 'success');
-                    else if (res.error) notify(res.error, 'error');
-                  }}
-                  className="h-9 px-3.5 rounded-lg bg-teal-700 hover:bg-teal-800 text-white font-semibold inline-flex items-center gap-1.5 disabled:opacity-60"
-                >
-                  <Cloud className="w-3.5 h-3.5" />
-                  <span>{t.common.connectCloud}</span>
-                </button>
-              )}
-              <button
-                type="button"
-                disabled={syncStatus === 'syncing' || cloudConnecting}
-                onClick={async () => {
-                  const res = await forceSyncNow();
-                  if (res.ok) {
-                    notify(
-                      res.synced > 0
-                        ? `${res.synced} ta yozuv Firebase bilan sinxronlandi`
-                        : "Firebase bazasi bilan to'liq sinxronlangan",
-                      'success'
-                    );
-                  } else if (res.error) {
-                    notify(res.error, 'error');
-                  }
-                }}
-                className="h-9 px-3.5 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 font-semibold inline-flex items-center gap-1.5 disabled:opacity-60"
-              >
-                <RefreshCw className={`w-3.5 h-3.5 ${syncStatus === 'syncing' ? 'animate-spin' : ''}`} />
-                <span>{t.common.syncNow}</span>
-              </button>
-            </div>
-          </div>
-
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5 space-y-4">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
@@ -1121,7 +1016,7 @@ export const SettingsPage: React.FC = () => {
                 disabled={migratingCloud || !isOnline}
                 onClick={async () => {
                   if (!cloudConnected) {
-                    notify("Avval yuqoridan Google hisobingiz bilan bulutga ulaning", 'info');
+                    notify("Tizim internet va server bilan ulanmoqda, birozdan so'ng qayta urinib ko'ring", 'info');
                     return;
                   }
                   setMigratingCloud(true);

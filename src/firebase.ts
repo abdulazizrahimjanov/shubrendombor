@@ -1,8 +1,11 @@
 import { initializeApp, getApps, getApp, FirebaseApp } from 'firebase/app';
 import {
   getAuth,
-  GoogleAuthProvider,
-  signInWithPopup,
+  initializeAuth,
+  inMemoryPersistence,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  updatePassword,
   signOut,
   onAuthStateChanged,
   User as FirebaseUser,
@@ -48,8 +51,52 @@ export interface FirestoreErrorInfo {
 
 const app: FirebaseApp = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 export const auth: Auth = getAuth(app);
-export const googleProvider = new GoogleAuthProvider();
-googleProvider.setCustomParameters({ prompt: 'select_account' });
+
+let secondaryAuthInstance: Auth | null = null;
+function getSecondaryAuth(): Auth {
+  if (secondaryAuthInstance) return secondaryAuthInstance;
+  const existing = getApps().find((a) => a.name === 'staff-provisioner');
+  const secApp = existing || initializeApp(firebaseConfig, 'staff-provisioner');
+  try {
+    secondaryAuthInstance = initializeAuth(secApp, {
+      persistence: inMemoryPersistence,
+    });
+  } catch {
+    secondaryAuthInstance = getAuth(secApp);
+  }
+  return secondaryAuthInstance;
+}
+
+export function normalizePhoneDigits(phone: string): string {
+  const digits = String(phone || '').replace(/\D/g, '');
+  if (!digits) return '';
+  if (digits.length === 9) return `998${digits}`;
+  return digits;
+}
+
+export function phoneToInternalEmail(phone: string): string {
+  const digits = normalizePhoneDigits(phone);
+  return digits ? `staff.${digits}@shubrend.internal` : '';
+}
+
+export function deriveFirebaseAuthPassword(phone: string, rawSecret: string): string {
+  const digits = normalizePhoneDigits(phone);
+  const secret = String(rawSecret || '').trim();
+  // Deterministic high-entropy password >= 24 chars so even 4-digit PINs satisfy Firebase Auth minimum length
+  let h1 = 0x811c9dc5;
+  let h2 = 0x9e3779b9;
+  const seed = `shu_brend_v1:${digits}:${secret}`;
+  for (let i = 0; i < seed.length; i++) {
+    const ch = seed.charCodeAt(i);
+    h1 ^= ch;
+    h1 = Math.imul(h1, 0x01000193) >>> 0;
+    h2 ^= ch + (i << 1);
+    h2 = Math.imul(h2, 0x85ebca6b) >>> 0;
+  }
+  const hex1 = h1.toString(16).padStart(8, '0');
+  const hex2 = h2.toString(16).padStart(8, '0');
+  return `Sb!${hex1}${hex2}${digits.slice(-4) || '0000'}#${secret.length}`;
+}
 
 const isBrowser = typeof window !== 'undefined';
 const baseFirestoreSettings: FirestoreSettings = {
@@ -136,54 +183,54 @@ export function formatFirebaseError(error: unknown, lang: 'uz' | 'ru' = 'uz'): s
   const { code, message } = extractRawErrorMessage(error);
   const low = `${code} ${message}`.toLowerCase();
 
-  if (low.includes('auth/unauthorized-domain')) {
-    const host = typeof window !== 'undefined' ? window.location.hostname : '';
+  if (low.includes('auth/invalid-credential') || low.includes('auth/wrong-password') || low.includes('auth/user-not-found')) {
     return lang === 'ru'
-      ? `Домен (${host}) не добавлен в Firebase Authentication -> Authorized domains.`
-      : `Ushbu domen (${host}) Firebase Authentication -> Authorized domains ro'yxatiga kiritilmagan.`;
+      ? 'Неверный номер телефона или пароль/PIN.'
+      : "Telefon raqami yoki parol/PIN noto'g'ri.";
   }
-  if (low.includes('auth/popup-blocked')) {
+  if (low.includes('auth/too-many-requests')) {
     return lang === 'ru'
-      ? 'Браузер заблокировал всплывающее окно Google входа. Разрешите всплывающие окна.'
-      : "Brauzer Google kirish oynasini blokladi. Qalqib chiquvchi oynalarga (Pop-up) ruxsat bering.";
-  }
-  if (low.includes('auth/popup-closed-by-user') || low.includes('auth/cancelled-popup-request')) {
-    return lang === 'ru'
-      ? 'Окно входа через Google было закрыто.'
-      : "Google orqali kirish oynasi yopildi.";
+      ? 'Слишком много попыток входа. Попробуйте через несколько минут.'
+      : "Juda ko'p urinish. Bir necha daqiqadan so'ng qayta urinib ko'ring.";
   }
   if (low.includes('auth/operation-not-allowed')) {
     return lang === 'ru'
-      ? 'В Firebase Console не включён Google Sign-In.'
-      : "Firebase Console'da Google orqali kirish (Sign-in provider) yoqilmagan.";
+      ? 'В Firebase Authentication не включён вход по Email/Password.'
+      : "Firebase Authentication'da Email/Password kirish usuli yoqilmagan.";
   }
   if (low.includes('auth/network-request-failed')) {
     return lang === 'ru'
-      ? 'Ошибка сети при подключении к Google/Firebase. Проверьте интернет.'
-      : "Internet aloqasi uzilgan. Google/Firebase bilan bog'lanib bo'lmadi.";
+      ? 'Ошибка сети при подключении к серверу. Проверьте интернет.'
+      : "Internet aloqasi uzilgan. Server bilan bog'lanib bo'lmadi.";
   }
   if (low.includes('permission-denied') || low.includes('insufficient permissions') || low.includes('missing or insufficient')) {
-    if (message.includes('Google hisobingiz') || message.includes('Umumiy baza')) {
+    if (message.includes('Umumiy baza') || message.includes('ish maydoniga')) {
       return message;
+    }
+    const rawStr = error instanceof Error ? error.message.toLowerCase() : '';
+    if (rawStr.includes('"path":"admins/') || rawStr.includes('"path":"userprofiles/')) {
+      return lang === 'ru'
+        ? 'Правила безопасности Firestore (firestore.rules) на сервере Firebase ещё не обновлены. Опубликуйте актуальный firestore.rules в Firebase Console.'
+        : "Firebase serveridagi Firestore Security Rules hali yangilanmagan. Firebase Console orqali firestore.rules qoidalarini nashr qiling.";
     }
     return lang === 'ru'
       ? 'Недостаточно прав доступа в Firebase (Firestore Security Rules).'
-      : "Firebase ma'lumotlar bazasiga yozish/o'qish uchun ruxsat yetarli emas.";
+      : "Ushbu amalni bulutga yozish uchun ruxsat yetarli emas. Administrator bilan bog'laning.";
   }
   if (low.includes('unavailable') || low.includes('client is offline') || low.includes('network')) {
     return lang === 'ru'
-      ? 'Сервер Firebase временно недоступен. Изменения сохранены локально и синхронизируются при восстановлении связи.'
-      : "Firebase serveri bilan aloqa vaqtincha uzildi. O'zgarishlar qurilmada saqlandi va aloqa tiklanganda yuboriladi.";
+      ? 'Сервер временно недоступен. Изменения сохранены локально и синхронизируются при восстановлении связи.'
+      : "Server bilan aloqa vaqtincha uzildi. O'zgarishlar qurilmada saqlandi va aloqa tiklanganda yuboriladi.";
   }
   if (low.includes('resource-exhausted')) {
     return lang === 'ru'
       ? 'Превышен лимит запросов или размер данных Firebase.'
-      : "Firebase so'rovlar limiti yoki hujjat hajmi chegarasidan oshdi.";
+      : "So'rovlar limiti yoki hujjat hajmi chegarasidan oshdi.";
   }
   if (message.trim()) return message;
   return lang === 'ru'
-    ? 'Произошла ошибка подключения к облачной базе Firebase.'
-    : "Firebase bulutli bazasi bilan ishlashda xatolik yuz berdi.";
+    ? 'Произошла ошибка подключения к облачной базе.'
+    : "Bulutli baza bilan ishlashda xatolik yuz berdi.";
 }
 
 export const formatFirebaseErrorMessage = formatFirebaseError;
@@ -257,9 +304,50 @@ export async function testConnection(): Promise<boolean> {
   return res.ok;
 }
 
-export async function signInWithGooglePopup(): Promise<FirebaseUser> {
-  const result = await signInWithPopup(auth, googleProvider);
-  return result.user;
+export async function signInStaffWithEmailPassword(
+  email: string,
+  password: string
+): Promise<FirebaseUser> {
+  const res = await signInWithEmailAndPassword(auth, email, password);
+  return res.user;
+}
+
+export async function createStaffWithEmailPassword(
+  email: string,
+  password: string
+): Promise<FirebaseUser> {
+  const res = await createUserWithEmailAndPassword(auth, email, password);
+  return res.user;
+}
+
+export async function provisionStaffAccountOnSecondaryApp(
+  email: string,
+  nextPassword: string,
+  previousPassword?: string
+): Promise<void> {
+  if (!email || !nextPassword) return;
+  const secAuth = getSecondaryAuth();
+  try {
+    try {
+      await createUserWithEmailAndPassword(secAuth, email, nextPassword);
+    } catch (err) {
+      const code = typeof err === 'object' && err !== null && 'code' in err ? String((err as { code?: unknown }).code) : '';
+      if (code === 'auth/email-already-in-use' && previousPassword && previousPassword !== nextPassword) {
+        try {
+          const cred = await signInWithEmailAndPassword(secAuth, email, previousPassword);
+          await updatePassword(cred.user, nextPassword);
+        } catch {
+          // ignore if previous password unknown or unchanged
+        }
+      }
+    }
+  } finally {
+    try {
+      await signOut(secAuth);
+    } catch {
+      // ignore cleanup error
+    }
+  }
 }
 
 export async function signOutFirebase(): Promise<void> {

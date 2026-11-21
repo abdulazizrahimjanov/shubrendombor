@@ -73,7 +73,6 @@ export const EmployeesPage: React.FC = () => {
 
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('+99890');
-  const [googleEmail, setGoogleEmail] = useState('');
   const [roleId, setRoleId] = useState<RoleId>('cashier');
   const [assignedStoreIds, setAssignedStoreIds] = useState<string[]>([]);
   const [baseSalary, setBaseSalary] = useState(3500000);
@@ -141,7 +140,6 @@ export const EmployeesPage: React.FC = () => {
     setEditingEmp(null);
     setName('');
     setPhone('+99890');
-    setGoogleEmail('');
     setRoleId('cashier');
     setAssignedStoreIds(db.stores[0] ? [db.stores[0].id] : []);
     setBaseSalary(3500000);
@@ -161,7 +159,6 @@ export const EmployeesPage: React.FC = () => {
     setEditingEmp(emp);
     setName(emp.name);
     setPhone(emp.phone);
-    setGoogleEmail(linkedUser?.googleEmail ?? '');
     setRoleId(emp.roleId);
     setAssignedStoreIds(linkedUser?.assignedStoreIds?.length ? linkedUser.assignedStoreIds : [emp.storeId]);
     setBaseSalary(emp.baseSalary);
@@ -225,8 +222,8 @@ export const EmployeesPage: React.FC = () => {
       return;
     }
 
-    if (!editingEmp && !password.trim() && !googleEmail.trim()) {
-      notify('Kamida parol yoki Google Email kiriting', 'error');
+    if (!editingEmp && password.trim().length < 4) {
+      notify("Kamida 4 ta belgidan iborat kirish parolini kiriting", 'error');
       return;
     }
     if (!Number.isFinite(baseSalary) || baseSalary < 0) {
@@ -242,49 +239,51 @@ export const EmployeesPage: React.FC = () => {
     const primaryStoreId = assignedStoreIds[0] || db.stores[0]?.id || 'store-chilonzor';
     const empId = editingEmp ? editingEmp.id : uid('emp');
 
-    await upsertEmployee(
-      {
-        id: empId,
-        userId: targetUserId,
-        name: name.trim(),
-        phone: phone.trim(),
-        googleEmail: googleEmail.trim().toLowerCase() || undefined,
-        roleId,
-        baseSalary,
-        commissionPercent: commissionPct,
-        schedule: schedule.trim() || '2/2 smena, 09:00–21:00',
-        hiredAt: editingEmp ? editingEmp.hiredAt : nowIso,
-        storeId: primaryStoreId,
-        createdAt: editingEmp ? editingEmp.createdAt : nowIso,
-        updatedAt: nowIso,
-        createdBy: currentUser?.id ?? 'system',
-      },
-      {
-        pin: cleanPin,
-        googleEmail: googleEmail.trim().toLowerCase() || undefined,
-        ...(password.trim() ? { password: password.trim() } : {}),
-        assignedStoreIds: assignedStoreIds.length ? assignedStoreIds : [primaryStoreId],
-        ...(useCustomPerms ? { customPermissions: customPerms } : {}),
-      },
-      { clearCustomPermissions: !useCustomPerms }
-    );
+    try {
+      await upsertEmployee(
+        {
+          id: empId,
+          userId: targetUserId,
+          name: name.trim(),
+          phone: phone.trim(),
+          roleId,
+          baseSalary,
+          commissionPercent: commissionPct,
+          schedule: schedule.trim() || '2/2 smena, 09:00–21:00',
+          hiredAt: editingEmp ? editingEmp.hiredAt : nowIso,
+          storeId: primaryStoreId,
+          createdAt: editingEmp ? editingEmp.createdAt : nowIso,
+          updatedAt: nowIso,
+          createdBy: currentUser?.id ?? 'system',
+        },
+        {
+          pin: cleanPin,
+          ...(password.trim() ? { password: password.trim() } : {}),
+          assignedStoreIds: assignedStoreIds.length ? assignedStoreIds : [primaryStoreId],
+          ...(useCustomPerms ? { customPermissions: customPerms } : {}),
+        },
+        { clearCustomPermissions: !useCustomPerms }
+      );
 
-    if (!editingEmp) {
-      const now = new Date();
-      await upsertTarget({
-        id: uid('tgt'),
-        employeeId: empId,
-        month: `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`,
-        targetAmount: 30000000,
-        storeId: primaryStoreId,
-        createdAt: nowIso,
-        updatedAt: nowIso,
-        createdBy: currentUser?.id ?? 'system',
-      });
+      if (!editingEmp) {
+        const now = new Date();
+        await upsertTarget({
+          id: uid('tgt'),
+          employeeId: empId,
+          month: `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`,
+          targetAmount: 30000000,
+          storeId: primaryStoreId,
+          createdAt: nowIso,
+          updatedAt: nowIso,
+          createdBy: currentUser?.id ?? 'system',
+        });
+      }
+
+      notify(editingEmp ? 'Xodim ma\'lumotlari yangilandi' : "Yangi xodim qo'shildi", 'success');
+      setModalOpen(false);
+    } catch (err) {
+      notify((err as Error)?.message || 'Xodimni saqlashda xatolik', 'error');
     }
-
-    notify(editingEmp ? 'Xodim ma\'lumotlari yangilandi' : "Yangi xodim qo'shildi", 'success');
-    setModalOpen(false);
   };
 
   return (
@@ -361,11 +360,6 @@ export const EmployeesPage: React.FC = () => {
                     <div className="text-[11px] text-slate-500 font-mono">
                       {getRoleLabel(r.emp.roleId)} · {r.emp.phone}
                     </div>
-                    {(r.linkedUser?.googleEmail || r.emp.googleEmail) && (
-                      <div className="text-[10px] text-teal-700 dark:text-teal-400 font-mono truncate">
-                        {r.linkedUser?.googleEmail || r.emp.googleEmail}
-                      </div>
-                    )}
                   </td>
                   <td className="py-3 px-3 text-slate-500">
                     <div className="font-mono text-slate-700 dark:text-slate-300 flex items-center gap-1">
@@ -553,19 +547,6 @@ export const EmployeesPage: React.FC = () => {
                   value={schedule}
                   onChange={(e) => setSchedule(e.target.value)}
                   className="w-full h-10 px-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-xs"
-                />
-              </div>
-
-              <div className="sm:col-span-2">
-                <label className="block text-slate-500 mb-1 font-medium">
-                  Google Email (bulutli sinxronlash uchun)
-                </label>
-                <input
-                  type="email"
-                  value={googleEmail}
-                  onChange={(e) => setGoogleEmail(e.target.value)}
-                  placeholder="xodim@gmail.com"
-                  className="w-full h-10 px-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-xs font-mono"
                 />
               </div>
 

@@ -22,7 +22,13 @@ import {
   writeBatch,
   getDocFromServer,
 } from 'firebase/firestore';
-import { firestoreDb, formatFirebaseErrorMessage, handleFirestoreError, OperationType } from '../firebase';
+import {
+  firestoreDb,
+  formatFirebaseErrorMessage,
+  handleFirestoreError,
+  OperationType,
+  phoneToInternalEmail,
+} from '../firebase';
 import {
   Account,
   AppSettings,
@@ -67,8 +73,16 @@ export const ADMIN_BOOTSTRAPPED_EMAILS = [
   'assalomu408@gmail.com',
   'assdsh993@gmail.com',
   'a1sanjar73@gmail.com',
+  'staff.998889260404@shubrend.internal',
 ] as const;
 export const ADMIN_BOOTSTRAPPED_EMAIL = ADMIN_BOOTSTRAPPED_EMAILS[0];
+
+export class BusinessRuleError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'BusinessRuleError';
+  }
+}
 
 export function isBootstrappedAdminEmail(email?: string | null): boolean {
   const normalized = (email || '').trim().toLowerCase();
@@ -1045,11 +1059,16 @@ class ChunkedBatchWriter {
 function buildInvitedEmailsFromSnapshot(snapshot: DatabaseSnapshot): string[] {
   const emails = new Set<string>(ADMIN_BOOTSTRAPPED_EMAILS);
   snapshot.users.forEach((u) => {
+    if (!u.isActive) return;
+    const phoneEmail = phoneToInternalEmail(u.phone);
+    if (phoneEmail) emails.add(phoneEmail);
     if (u.googleEmail && u.googleEmail.trim()) {
       emails.add(u.googleEmail.trim().toLowerCase());
     }
   });
   snapshot.employees.forEach((e) => {
+    const phoneEmail = phoneToInternalEmail(e.phone);
+    if (phoneEmail) emails.add(phoneEmail);
     if (e.googleEmail && e.googleEmail.trim()) {
       emails.add(e.googleEmail.trim().toLowerCase());
     }
@@ -1063,10 +1082,6 @@ export async function bootstrapOrJoinWorkspace(
   fbUser: FirebaseUser,
   localSnapshot: DatabaseSnapshot
 ): Promise<WorkspaceContext> {
-  if (!fbUser.emailVerified) {
-    throw new Error("Google hisobingizning email manzili tasdiqlanmagan.");
-  }
-
   const uid = fbUser.uid;
   const email = (fbUser.email || '').trim().toLowerCase();
   const displayName = nonEmptyStr(fbUser.displayName || email.split('@')[0] || 'Xodim', 120, 'Xodim');
@@ -1140,7 +1155,7 @@ export async function bootstrapOrJoinWorkspace(
     const msg = err instanceof Error ? err.message : String(err);
     if (msg.toLowerCase().includes('permission') || msg.toLowerCase().includes('insufficient')) {
       throw new Error(
-        `Sizning Google hisobingiz (${email}) hali ish maydoniga taklif qilinmagan. Admindan Xodimlar bo'limiga Google emailingizni qo'shishini so'rang.`
+        "Ushbu xodim hisobi hali umumiy ish maydoniga biriktirilmagan. Admindan Xodimlar bo'limidan ruxsat berishini so'rang."
       );
     }
     handleFirestoreError(err, OperationType.GET, `workspaces/${PRIMARY_WORKSPACE_ID}`);
@@ -1150,7 +1165,7 @@ export async function bootstrapOrJoinWorkspace(
   if (!wsSnap.exists()) {
     if (!isBootstrappedAdminEmail(email)) {
       throw new Error(
-        `Umumiy baza hali yaratilmagan. Avval do'kon egasi (${ADMIN_BOOTSTRAPPED_EMAILS.join(' / ')}) Google orqali kirishi kerak.`
+        "Umumiy baza hali yaratilmagan. Avval do'kon egasi (+998 88 926 04 04) tizimga kirishi kerak."
       );
     }
 
@@ -1247,7 +1262,7 @@ export async function bootstrapOrJoinWorkspace(
 
   if (!isOwner && !memberUids.includes(uid) && !adminUids.includes(uid) && !isInvited) {
     throw new Error(
-      `Sizning Google hisobingiz (${email}) ushbu ish maydoniga biriktirilmagan. Admindan Xodimlar bo'limida emailingizni kiritishini so'rang.`
+      "Sizning xodim hisobingiz ushbu ish maydoniga biriktirilmagan. Administrator bilan bog'laning."
     );
   }
 
@@ -1312,10 +1327,9 @@ export async function bootstrapOrJoinWorkspace(
 
       const defaultPerms =
         invitePerms ??
-        mapAppPermissionsToRuleTokens(
-          isOwner ? [] : ['use_pos', 'view_catalog', 'view_customers', 'manage_customers'],
-          matchedRole
-        );
+        (isOwner
+          ? mapAppPermissionsToRuleTokens([], matchedRole)
+          : ['sell', 'manage_customers']);
 
       await setDoc(memberRef, {
         uid,
@@ -1490,9 +1504,14 @@ export async function migrateSnapshotToWorkspace(
     const staffId = sanitizeId(emp.id);
     writer.add((b) => b.set(doc(firestoreDb, wsPath, 'staffDirectory', staffId), serializeStaffDirectoryEntry(userObj, emp, ctx)));
     writer.add((b) => b.set(doc(firestoreDb, wsPath, 'staffCredentials', staffId), serializeStaffCredential(userObj, emp, ctx)));
-    const cleanEmail = (emp.googleEmail || userObj.googleEmail || '').trim().toLowerCase();
-    if (cleanEmail) {
-      const emailHash = await sha256Hex(cleanEmail);
+    const candidateEmails = Array.from(
+      new Set([
+        phoneToInternalEmail(emp.phone || userObj.phone),
+        (emp.googleEmail || userObj.googleEmail || '').trim().toLowerCase(),
+      ].filter(Boolean))
+    );
+    for (const candidateEmail of candidateEmails) {
+      const emailHash = await sha256Hex(candidateEmail);
       inviteEntries.push({
         emailHash,
         data: serializeStaffInvite(userObj, emp, snapshot.roles, ctx, emailHash),
@@ -1504,9 +1523,14 @@ export async function migrateSnapshotToWorkspace(
     const staffId = sanitizeId(u.id);
     writer.add((b) => b.set(doc(firestoreDb, wsPath, 'staffDirectory', staffId), serializeStaffDirectoryEntry(u, undefined, ctx)));
     writer.add((b) => b.set(doc(firestoreDb, wsPath, 'staffCredentials', staffId), serializeStaffCredential(u, undefined, ctx)));
-    const cleanEmail = (u.googleEmail || '').trim().toLowerCase();
-    if (cleanEmail) {
-      const emailHash = await sha256Hex(cleanEmail);
+    const candidateEmails = Array.from(
+      new Set([
+        phoneToInternalEmail(u.phone),
+        (u.googleEmail || '').trim().toLowerCase(),
+      ].filter(Boolean))
+    );
+    for (const candidateEmail of candidateEmails) {
+      const emailHash = await sha256Hex(candidateEmail);
       inviteEntries.push({
         emailHash,
         data: serializeStaffInvite(u, undefined, snapshot.roles, ctx, emailHash),
@@ -2381,7 +2405,19 @@ export async function checkWorkspaceSyncHealth(
   }
 }
 
-const WORKSPACE_WIDE_READ_COLS = new Set(['stores', 'warehouses', 'categories', 'brands']);
+const WORKSPACE_WIDE_READ_COLS = new Set([
+  'stores',
+  'warehouses',
+  'categories',
+  'brands',
+  'products',
+  'suppliers',
+  'accounts',
+  'customers',
+  'loyaltyAccounts',
+  'promoCodes',
+  'staffDirectory',
+]);
 
 export function subscribeWorkspaceRealtime(
   ctx: WorkspaceContext,
@@ -2649,11 +2685,7 @@ export function subscribeWorkspaceRealtime(
         ];
       }
       if (isWorkspaceWide) {
-        return [
-          ctx.isPlatformAdmin
-            ? colRef
-            : query(colRef, where('memberUids', 'array-contains', ctx.uid)),
-        ];
+        return [colRef];
       }
       if (ctx.isPlatformAdmin || ctx.isWsAdmin) {
         return [colRef];
@@ -2915,29 +2947,69 @@ export async function pushSyncItemToFirestore(
         const opSnap = await tx.get(phaseOpRef);
         if (opSnap.exists()) return;
 
+        // Aggregate per (warehouseId, variantId) so duplicate variant entries never clash
+        const grouped = new Map<
+          string,
+          {
+            stkId: string;
+            productId: string;
+            variantId: string;
+            warehouseId: string;
+            storeId: string;
+            totalDelta: number;
+            movements: StockMovement[];
+          }
+        >();
+
+        for (const entry of entries) {
+          const stkId = stockItemDocId(entry.warehouseId, entry.variantId);
+          const prev = grouped.get(stkId);
+          if (prev) {
+            prev.totalDelta = Number((prev.totalDelta + entry.qtyDelta).toFixed(3));
+            if (entry.movement) prev.movements.push(entry.movement);
+          } else {
+            grouped.set(stkId, {
+              stkId,
+              productId: entry.productId,
+              variantId: entry.variantId,
+              warehouseId: entry.warehouseId,
+              storeId: entry.storeId,
+              totalDelta: Number(entry.qtyDelta.toFixed(3)),
+              movements: entry.movement ? [entry.movement] : [],
+            });
+          }
+        }
+
         // Read all affected stockItems first (Firestore transactions require all reads before writes)
         const reads: {
-          entry: (typeof entries)[number];
+          group: NonNullable<ReturnType<typeof grouped.get>>;
           ref: ReturnType<typeof doc>;
           exists: boolean;
           currentQty: number;
         }[] = [];
 
-        for (const entry of entries) {
-          const stkId = stockItemDocId(entry.warehouseId, entry.variantId);
-          const ref = doc(firestoreDb, wsPath, 'stockItems', stkId);
+        for (const group of grouped.values()) {
+          const ref = doc(firestoreDb, wsPath, 'stockItems', group.stkId);
           const snap = await tx.get(ref);
+          const currentQty = snap.exists() ? Number(snap.data().qty || 0) : 0;
+          const nextQty = Number((currentQty + group.totalDelta).toFixed(3));
+          if (group.totalDelta < 0 && !snapshot.settings.allowNegativeStock && nextQty < 0) {
+            const prodName =
+              snapshot.products.find((p) => p.id === group.productId)?.name || 'Mahsulot';
+            throw new BusinessRuleError(
+              `"${prodName}" omborda yetarli emas (Mavjud: ${currentQty}, So'ralgan: ${Math.abs(group.totalDelta)}).`
+            );
+          }
           reads.push({
-            entry,
+            group,
             ref,
             exists: snap.exists(),
-            currentQty: snap.exists() ? Number(snap.data().qty || 0) : 0,
+            currentQty,
           });
         }
 
         for (const r of reads) {
-          const nextQty = Number((r.currentQty + r.entry.qtyDelta).toFixed(3));
-          const stkId = stockItemDocId(r.entry.warehouseId, r.entry.variantId);
+          const nextQty = Number((r.currentQty + r.group.totalDelta).toFixed(3));
           if (r.exists) {
             tx.update(r.ref, { qty: nextQty, updatedAt: serverTimestamp() });
           } else {
@@ -2945,12 +3017,12 @@ export async function pushSyncItemToFirestore(
               r.ref,
               serializeStockItem(
                 {
-                  id: stkId,
-                  productId: r.entry.productId,
-                  variantId: r.entry.variantId,
-                  warehouseId: r.entry.warehouseId,
+                  id: r.group.stkId,
+                  productId: r.group.productId,
+                  variantId: r.group.variantId,
+                  warehouseId: r.group.warehouseId,
                   qty: nextQty,
-                  storeId: r.entry.storeId,
+                  storeId: r.group.storeId,
                   createdAt: new Date().toISOString(),
                   updatedAt: new Date().toISOString(),
                   createdBy: ctx.uid,
@@ -2960,8 +3032,10 @@ export async function pushSyncItemToFirestore(
             );
           }
 
-          if (r.entry.movement) {
-            const mov = { ...r.entry.movement, qtyAfter: nextQty };
+          let runningQty = r.currentQty;
+          for (const rawMov of r.group.movements) {
+            runningQty = Number((runningQty + rawMov.qtyDelta).toFixed(3));
+            const mov = { ...rawMov, qtyAfter: runningQty };
             tx.set(
               doc(firestoreDb, wsPath, 'stockMovements', sanitizeId(mov.id)),
               serializeStockMovement(mov, tenantCtx)
@@ -2982,6 +3056,7 @@ export async function pushSyncItemToFirestore(
         });
       });
     } catch (err) {
+      if (err instanceof BusinessRuleError) throw err;
       handleFirestoreError(err, OperationType.WRITE, `${wsPath}/stockItems`);
     }
   };
@@ -3513,149 +3588,311 @@ export async function pushSyncItemToFirestore(
           .map((id) => snapshot.stockMovements.find((m) => m.id === id))
           .filter(Boolean) as StockMovement[];
 
-        if (movements.length > 0) {
-          await applyStockDeltasInTx(
-            movements.map((m) => ({
-              productId: m.productId,
-              variantId: m.variantId,
-              warehouseId: m.warehouseId,
-              storeId: m.storeId,
-              qtyDelta: m.qtyDelta,
-              movement: m,
-            }))
-          );
-        }
+        await runTransaction(firestoreDb, async (tx) => {
+          // 1. Idempotency check
+          const opSnap = await tx.get(syncedOpRef);
+          if (opSnap.exists()) return;
 
-        const batch = writeBatch(firestoreDb);
-        const saleRef = doc(firestoreDb, wsPath, 'sales', sanitizeId(sale.id));
-        if (item.type === 'sale_pay_deferred') {
-          batch.update(
-            saleRef,
-            stripUndefinedDeep({
-              status: sale.status,
-              payments: sale.payments,
-              paidAmount: sale.paidAmount,
-              debtAmount: sale.debtAmount,
-              totalAmount: sale.totalAmount,
-              vatAmount: sale.vatAmount,
-              loyaltyPointsSpent: sale.loyaltyPointsSpent,
-              loyaltyPointsEarned: sale.loyaltyPointsEarned,
-              cashierId: sale.cashierId,
-              cashierName: sale.cashierName,
-              offlineCreated: false,
-              syncedAt: new Date().toISOString(),
-              ...(sale.customerId !== undefined ? { customerId: sale.customerId } : {}),
-              ...(sale.customerName !== undefined ? { customerName: sale.customerName } : {}),
-              ...(sale.shiftId !== undefined ? { shiftId: sale.shiftId } : {}),
-              ...(sale.cashGiven !== undefined ? { cashGiven: sale.cashGiven } : {}),
-              ...(sale.changeAmount !== undefined ? { changeAmount: sale.changeAmount } : {}),
-              ...(sale.paidAt ? { paidAt: sale.paidAt } : {}),
-              updatedAt: serverTimestamp(),
-            })
-          );
-        } else {
-          batch.set(saleRef, serializeSale({ ...sale, offlineCreated: false, syncedAt: new Date().toISOString() }, tenantCtx));
-        }
+          const saleRef = doc(firestoreDb, wsPath, 'sales', sanitizeId(sale.id));
 
-        if (sale.customerId) {
-          const cust = snapshot.customers.find((c) => c.id === sale.customerId);
-          if (cust) {
+          // 2. For deferred checkout, verify the sale is still deferred on server
+          if (item.type === 'sale_pay_deferred') {
+            const saleSnap = await tx.get(saleRef);
+            if (!saleSnap.exists() || saleSnap.data()?.status !== 'deferred') {
+              throw new BusinessRuleError("Ushbu kechiktirilgan chek allaqachon to'langan yoki topilmadi.");
+            }
+          }
+
+          // 3. Group & read all affected stockItems first
+          const stockGroups = new Map<
+            string,
+            {
+              stkId: string;
+              productId: string;
+              variantId: string;
+              warehouseId: string;
+              storeId: string;
+              totalDelta: number;
+              movements: StockMovement[];
+            }
+          >();
+          for (const m of movements) {
+            const stkId = stockItemDocId(m.warehouseId, m.variantId);
+            const prev = stockGroups.get(stkId);
+            if (prev) {
+              prev.totalDelta = Number((prev.totalDelta + m.qtyDelta).toFixed(3));
+              prev.movements.push(m);
+            } else {
+              stockGroups.set(stkId, {
+                stkId,
+                productId: m.productId,
+                variantId: m.variantId,
+                warehouseId: m.warehouseId,
+                storeId: m.storeId,
+                totalDelta: Number(m.qtyDelta.toFixed(3)),
+                movements: [m],
+              });
+            }
+          }
+
+          const stockReads: {
+            group: NonNullable<ReturnType<typeof stockGroups.get>>;
+            ref: ReturnType<typeof doc>;
+            exists: boolean;
+            currentQty: number;
+          }[] = [];
+
+          for (const group of stockGroups.values()) {
+            const ref = doc(firestoreDb, wsPath, 'stockItems', group.stkId);
+            const snap = await tx.get(ref);
+            const currentQty = snap.exists() ? Number(snap.data().qty || 0) : 0;
+            const nextQty = Number((currentQty + group.totalDelta).toFixed(3));
+            if (group.totalDelta < 0 && !snapshot.settings.allowNegativeStock && nextQty < 0) {
+              const prodName =
+                snapshot.products.find((p) => p.id === group.productId)?.name ||
+                sale.items.find((i) => i.productId === group.productId)?.productName ||
+                'Mahsulot';
+              throw new BusinessRuleError(
+                `"${prodName}" omborda yetarli emas (Qoldiq: ${currentQty}, So'ralgan: ${Math.abs(group.totalDelta)}).`
+              );
+            }
+            stockReads.push({ group, ref, exists: snap.exists(), currentQty });
+          }
+
+          // 4. Read customer, loyalty, promo, shift, accounts BEFORE any writes
+          const cust = sale.customerId ? snapshot.customers.find((c) => c.id === sale.customerId) : undefined;
+          const custRef = cust ? doc(firestoreDb, wsPath, 'customers', sanitizeId(cust.id)) : null;
+          const custSnap = custRef ? await tx.get(custRef) : null;
+
+          const loy = sale.customerId ? snapshot.loyaltyAccounts.find((l) => l.customerId === sale.customerId) : undefined;
+          const loyRef = loy ? doc(firestoreDb, wsPath, 'loyaltyAccounts', sanitizeId(loy.id)) : null;
+          const loySnap = loyRef ? await tx.get(loyRef) : null;
+
+          const promo = sale.promoCode
+            ? snapshot.promoCodes.find((p) => p.code.toUpperCase() === sale.promoCode?.toUpperCase())
+            : undefined;
+          const promoRef = promo ? doc(firestoreDb, wsPath, 'promoCodes', sanitizeId(promo.id)) : null;
+          const promoSnap = promoRef ? await tx.get(promoRef) : null;
+
+          const sh = sale.shiftId ? snapshot.cashShifts.find((s) => s.id === sale.shiftId) : undefined;
+          const shiftRef = sh ? doc(firestoreDb, wsPath, 'cashShifts', sanitizeId(sh.id)) : null;
+          const shiftSnap = shiftRef ? await tx.get(shiftRef) : null;
+
+          const accountIds = Array.from(
+            new Set(Array.isArray(payload.accountIds) ? (payload.accountIds as string[]) : [])
+          );
+          const accountDeltas = (payload.accountDeltas || null) as Record<string, number> | null;
+          const accReads: {
+            acc: Account;
+            ref: ReturnType<typeof doc>;
+            exists: boolean;
+            currentBalance: number;
+            delta: number | null;
+          }[] = [];
+          for (const accId of accountIds) {
+            const acc = snapshot.accounts.find((a) => a.id === accId);
+            if (!acc) continue;
+            const ref = doc(firestoreDb, wsPath, 'accounts', sanitizeId(acc.id));
+            const snap = await tx.get(ref);
+            accReads.push({
+              acc,
+              ref,
+              exists: snap.exists(),
+              currentBalance: snap.exists() ? Number(snap.data().balance || 0) : Number(acc.balance || 0),
+              delta: accountDeltas && typeof accountDeltas[accId] === 'number' ? accountDeltas[accId] : null,
+            });
+          }
+
+          // 5. All writes atomically inside the same transaction
+          for (const r of stockReads) {
+            const nextQty = Number((r.currentQty + r.group.totalDelta).toFixed(3));
+            if (r.exists) {
+              tx.update(r.ref, { qty: nextQty, updatedAt: serverTimestamp() });
+            } else {
+              tx.set(
+                r.ref,
+                serializeStockItem(
+                  {
+                    id: r.group.stkId,
+                    productId: r.group.productId,
+                    variantId: r.group.variantId,
+                    warehouseId: r.group.warehouseId,
+                    qty: nextQty,
+                    storeId: r.group.storeId,
+                    createdAt: new Date().toISOString(),
+                    updatedAt: new Date().toISOString(),
+                    createdBy: ctx.uid,
+                  },
+                  tenantCtx
+                )
+              );
+            }
+            let runningQty = r.currentQty;
+            for (const rawMov of r.group.movements) {
+              runningQty = Number((runningQty + rawMov.qtyDelta).toFixed(3));
+              const mov = { ...rawMov, qtyAfter: runningQty };
+              tx.set(
+                doc(firestoreDb, wsPath, 'stockMovements', sanitizeId(mov.id)),
+                serializeStockMovement(mov, tenantCtx)
+              );
+            }
+          }
+
+          if (item.type === 'sale_pay_deferred') {
+            tx.update(
+              saleRef,
+              stripUndefinedDeep({
+                status: sale.status,
+                payments: sale.payments,
+                paidAmount: sale.paidAmount,
+                debtAmount: sale.debtAmount,
+                totalAmount: sale.totalAmount,
+                vatAmount: sale.vatAmount,
+                loyaltyPointsSpent: sale.loyaltyPointsSpent,
+                loyaltyPointsEarned: sale.loyaltyPointsEarned,
+                cashierId: sale.cashierId,
+                cashierName: sale.cashierName,
+                offlineCreated: false,
+                syncedAt: new Date().toISOString(),
+                ...(sale.customerId !== undefined ? { customerId: sale.customerId } : {}),
+                ...(sale.customerName !== undefined ? { customerName: sale.customerName } : {}),
+                ...(sale.shiftId !== undefined ? { shiftId: sale.shiftId } : {}),
+                ...(sale.cashGiven !== undefined ? { cashGiven: sale.cashGiven } : {}),
+                ...(sale.changeAmount !== undefined ? { changeAmount: sale.changeAmount } : {}),
+                ...(sale.paidAt ? { paidAt: sale.paidAt } : {}),
+                updatedAt: serverTimestamp(),
+              })
+            );
+          } else {
+            tx.set(
+              saleRef,
+              serializeSale({ ...sale, offlineCreated: false, syncedAt: new Date().toISOString() }, tenantCtx)
+            );
+          }
+
+          if (cust && custRef) {
             const spentDelta = typeof payload.customerSpentDelta === 'number' ? payload.customerSpentDelta : null;
             const ordersDelta = typeof payload.customerOrdersDelta === 'number' ? payload.customerOrdersDelta : null;
             const cDebtDelta = typeof payload.customerDebtDelta === 'number' ? payload.customerDebtDelta : null;
-            batch.update(doc(firestoreDb, wsPath, 'customers', sanitizeId(cust.id)), {
-              totalSpent: spentDelta !== null ? increment(spentDelta) : cust.totalSpent,
-              ordersCount: ordersDelta !== null ? increment(ordersDelta) : cust.ordersCount,
-              ...(cust.lastPurchaseAt ? { lastPurchaseAt: cust.lastPurchaseAt } : {}),
-              segment: cust.segment,
-              debtBalance: cDebtDelta !== null ? increment(cDebtDelta) : cust.debtBalance,
-              updatedAt: serverTimestamp(),
-            });
+            if (custSnap?.exists()) {
+              const cData = custSnap.data();
+              tx.update(custRef, {
+                totalSpent: spentDelta !== null ? Math.max(0, Number(cData.totalSpent || 0) + spentDelta) : cust.totalSpent,
+                ordersCount: ordersDelta !== null ? Math.max(0, Number(cData.ordersCount || 0) + ordersDelta) : cust.ordersCount,
+                ...(cust.lastPurchaseAt ? { lastPurchaseAt: cust.lastPurchaseAt } : {}),
+                segment: cust.segment,
+                debtBalance: cDebtDelta !== null ? Number(cData.debtBalance || 0) + cDebtDelta : cust.debtBalance,
+                updatedAt: serverTimestamp(),
+              });
+            } else {
+              tx.set(custRef, serializeCustomer(cust, tenantCtx));
+            }
           }
-          const loy = snapshot.loyaltyAccounts.find((l) => l.customerId === sale.customerId);
-          if (loy) {
+
+          if (loy && loyRef) {
             const loyDelta = typeof payload.loyaltyPointsDelta === 'number' ? payload.loyaltyPointsDelta : null;
-            batch.update(doc(firestoreDb, wsPath, 'loyaltyAccounts', sanitizeId(loy.id)), {
-              tier: loy.tier,
-              cashbackPercent: loy.cashbackPercent,
-              pointsBalance: loyDelta !== null ? increment(loyDelta) : loy.pointsBalance,
-              ...(loy.expiresAt ? { expiresAt: loy.expiresAt } : {}),
-              updatedAt: serverTimestamp(),
-            });
+            if (loySnap?.exists()) {
+              const lData = loySnap.data();
+              tx.update(loyRef, {
+                tier: loy.tier,
+                cashbackPercent: loy.cashbackPercent,
+                pointsBalance: loyDelta !== null ? Math.max(0, Number(lData.pointsBalance || 0) + loyDelta) : loy.pointsBalance,
+                ...(loy.expiresAt ? { expiresAt: loy.expiresAt } : {}),
+                updatedAt: serverTimestamp(),
+              });
+            } else {
+              tx.set(loyRef, serializeLoyaltyAccount(loy, tenantCtx));
+            }
           }
-        }
 
-        const ltxIds = Array.isArray(payload.loyaltyTxIds) ? (payload.loyaltyTxIds as string[]) : [];
-        ltxIds.forEach((id) => {
-          const ltx = snapshot.loyaltyTransactions.find((x) => x.id === id);
-          if (ltx) {
-            batch.set(
-              doc(firestoreDb, wsPath, 'loyaltyTransactions', sanitizeId(ltx.id)),
-              serializeLoyaltyTransaction(ltx, tenantCtx)
-            );
+          const ltxIds = Array.isArray(payload.loyaltyTxIds) ? (payload.loyaltyTxIds as string[]) : [];
+          ltxIds.forEach((id) => {
+            const ltx = snapshot.loyaltyTransactions.find((x) => x.id === id);
+            if (ltx) {
+              tx.set(
+                doc(firestoreDb, wsPath, 'loyaltyTransactions', sanitizeId(ltx.id)),
+                serializeLoyaltyTransaction(ltx, tenantCtx)
+              );
+            }
+          });
+
+          if (payload.debtId) {
+            const debt = snapshot.debts.find((d) => d.id === String(payload.debtId));
+            if (debt) {
+              tx.set(doc(firestoreDb, wsPath, 'debts', sanitizeId(debt.id)), serializeDebt(debt, tenantCtx));
+            }
           }
-        });
 
-        if (payload.debtId) {
-          const debt = snapshot.debts.find((d) => d.id === String(payload.debtId));
-          if (debt) {
-            batch.set(doc(firestoreDb, wsPath, 'debts', sanitizeId(debt.id)), serializeDebt(debt, tenantCtx));
-          }
-        }
-
-        if (sale.promoCode) {
-          const promo = snapshot.promoCodes.find((p) => p.code.toUpperCase() === sale.promoCode?.toUpperCase());
-          if (promo) {
+          if (promo && promoRef && promoSnap?.exists()) {
             const promoDelta = typeof payload.promoUsedDelta === 'number' ? payload.promoUsedDelta : null;
-            batch.update(doc(firestoreDb, wsPath, 'promoCodes', sanitizeId(promo.id)), {
-              usedCount: promoDelta !== null ? increment(promoDelta) : promo.usedCount,
+            const currentUsed = Number(promoSnap.data().usedCount || 0);
+            tx.update(promoRef, {
+              usedCount: promoDelta !== null ? Math.max(0, currentUsed + promoDelta) : promo.usedCount,
               updatedAt: serverTimestamp(),
             });
           }
-        }
 
-        if (sale.shiftId) {
-          const sh = snapshot.cashShifts.find((s) => s.id === sale.shiftId);
-          if (sh) {
+          if (sh && shiftRef && shiftSnap?.exists() && shiftSnap.data()?.status === 'open') {
             const sDeltas = (payload.shiftDeltas || null) as
               | { cashSales?: number; cardSales?: number; otherSales?: number; expectedCash?: number }
               | null;
-            batch.update(doc(firestoreDb, wsPath, 'cashShifts', sanitizeId(sh.id)), {
+            const sData = shiftSnap.data();
+            tx.update(shiftRef, {
               cashSalesTotal:
-                typeof sDeltas?.cashSales === 'number' ? increment(sDeltas.cashSales) : sh.cashSalesTotal,
+                typeof sDeltas?.cashSales === 'number'
+                  ? Number(sData.cashSalesTotal || 0) + sDeltas.cashSales
+                  : sh.cashSalesTotal,
               cardSalesTotal:
-                typeof sDeltas?.cardSales === 'number' ? increment(sDeltas.cardSales) : sh.cardSalesTotal,
+                typeof sDeltas?.cardSales === 'number'
+                  ? Number(sData.cardSalesTotal || 0) + sDeltas.cardSales
+                  : sh.cardSalesTotal,
               otherSalesTotal:
-                typeof sDeltas?.otherSales === 'number' ? increment(sDeltas.otherSales) : sh.otherSalesTotal,
+                typeof sDeltas?.otherSales === 'number'
+                  ? Number(sData.otherSalesTotal || 0) + sDeltas.otherSales
+                  : sh.otherSalesTotal,
               expectedCash:
-                typeof sDeltas?.expectedCash === 'number' ? increment(sDeltas.expectedCash) : sh.expectedCash,
+                typeof sDeltas?.expectedCash === 'number'
+                  ? Number(sData.expectedCash || 0) + sDeltas.expectedCash
+                  : sh.expectedCash,
               updatedAt: serverTimestamp(),
             });
           }
-        }
 
-        const accountIds = Array.isArray(payload.accountIds) ? (payload.accountIds as string[]) : [];
-        const accountDeltas = (payload.accountDeltas || null) as Record<string, number> | null;
-        accountIds.forEach((accId) => {
-          const acc = snapshot.accounts.find((a) => a.id === accId);
-          if (acc) {
-            const delta = accountDeltas && typeof accountDeltas[accId] === 'number' ? accountDeltas[accId] : null;
-            batch.update(doc(firestoreDb, wsPath, 'accounts', sanitizeId(acc.id)), {
-              balance: delta !== null ? increment(delta) : acc.balance,
-              updatedAt: serverTimestamp(),
-            });
+          for (const ar of accReads) {
+            const nextBalance =
+              ar.delta !== null ? ar.currentBalance + ar.delta : ar.acc.balance;
+            if (ar.exists) {
+              tx.update(ar.ref, {
+                balance: nextBalance,
+                updatedAt: serverTimestamp(),
+              });
+            } else {
+              tx.set(ar.ref, serializeAccount({ ...ar.acc, balance: nextBalance }, tenantCtx));
+            }
           }
+
+          if (payload.auditId) {
+            const aud = snapshot.auditLogs.find((a) => a.id === String(payload.auditId));
+            if (aud) {
+              tx.set(
+                doc(firestoreDb, wsPath, 'auditLogs', sanitizeId(aud.id)),
+                serializeAuditLog(aud, tenantCtx)
+              );
+            }
+          }
+
+          tx.set(syncedOpRef, {
+            id: opId,
+            opType: clampStr(item.type, 80),
+            actorUid: ctx.uid,
+            storeId: storeIdForOp,
+            ownerUid: ctx.ownerUid,
+            memberUids: Array.from(new Set([ctx.ownerUid, ...ctx.memberUids])).slice(0, 50),
+            createdBy: ctx.uid,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
         });
-
-        if (payload.auditId) {
-          const aud = snapshot.auditLogs.find((a) => a.id === String(payload.auditId));
-          if (aud) {
-            batch.set(doc(firestoreDb, wsPath, 'auditLogs', sanitizeId(aud.id)), serializeAuditLog(aud, tenantCtx));
-          }
-        }
-
-        markSyncedInBatch(batch);
-        await batch.commit();
         return;
       }
 
@@ -3685,58 +3922,173 @@ export async function pushSyncItemToFirestore(
         const movements = movementIds
           .map((id) => snapshot.stockMovements.find((m) => m.id === id))
           .filter(Boolean) as StockMovement[];
-
-        if (movements.length > 0) {
-          await applyStockDeltasInTx(
-            movements.map((m) => ({
-              productId: m.productId,
-              variantId: m.variantId,
-              warehouseId: m.warehouseId,
-              storeId: m.storeId,
-              qtyDelta: m.qtyDelta,
-              movement: m,
-            }))
-          );
-        }
-
-        const batch = writeBatch(firestoreDb);
-        batch.set(doc(firestoreDb, wsPath, 'returns', sanitizeId(ret.id)), serializeReturnDoc(ret, tenantCtx));
         const sale = snapshot.sales.find((s) => s.id === ret.saleId);
-        if (sale) {
-          batch.update(doc(firestoreDb, wsPath, 'sales', sanitizeId(sale.id)), {
-            status: sale.status,
+
+        await runTransaction(firestoreDb, async (tx) => {
+          const opSnap = await tx.get(syncedOpRef);
+          if (opSnap.exists()) return;
+
+          const saleRef = doc(firestoreDb, wsPath, 'sales', sanitizeId(ret.saleId));
+          const saleSnap = await tx.get(saleRef);
+          if (
+            !saleSnap.exists() ||
+            !['completed', 'partial_return'].includes(String(saleSnap.data()?.status))
+          ) {
+            throw new BusinessRuleError("Ushbu chek bo'yicha qaytarish mumkin emas.");
+          }
+
+          const stockGroups = new Map<
+            string,
+            {
+              stkId: string;
+              productId: string;
+              variantId: string;
+              warehouseId: string;
+              storeId: string;
+              totalDelta: number;
+              movements: StockMovement[];
+            }
+          >();
+          for (const m of movements) {
+            const stkId = stockItemDocId(m.warehouseId, m.variantId);
+            const prev = stockGroups.get(stkId);
+            if (prev) {
+              prev.totalDelta = Number((prev.totalDelta + m.qtyDelta).toFixed(3));
+              prev.movements.push(m);
+            } else {
+              stockGroups.set(stkId, {
+                stkId,
+                productId: m.productId,
+                variantId: m.variantId,
+                warehouseId: m.warehouseId,
+                storeId: m.storeId,
+                totalDelta: Number(m.qtyDelta.toFixed(3)),
+                movements: [m],
+              });
+            }
+          }
+
+          const stockReads: {
+            group: NonNullable<ReturnType<typeof stockGroups.get>>;
+            ref: ReturnType<typeof doc>;
+            exists: boolean;
+            currentQty: number;
+          }[] = [];
+
+          for (const group of stockGroups.values()) {
+            const ref = doc(firestoreDb, wsPath, 'stockItems', group.stkId);
+            const snap = await tx.get(ref);
+            stockReads.push({
+              group,
+              ref,
+              exists: snap.exists(),
+              currentQty: snap.exists() ? Number(snap.data().qty || 0) : 0,
+            });
+          }
+
+          const sh = payload.shiftId
+            ? snapshot.cashShifts.find((s) => s.id === String(payload.shiftId))
+            : undefined;
+          const shiftRef = sh ? doc(firestoreDb, wsPath, 'cashShifts', sanitizeId(sh.id)) : null;
+          const shiftSnap = shiftRef ? await tx.get(shiftRef) : null;
+
+          const acc = payload.accountId
+            ? snapshot.accounts.find((a) => a.id === String(payload.accountId))
+            : undefined;
+          const accRef = acc ? doc(firestoreDb, wsPath, 'accounts', sanitizeId(acc.id)) : null;
+          const accSnap = accRef ? await tx.get(accRef) : null;
+
+          // Atomic writes
+          for (const r of stockReads) {
+            const nextQty = Number((r.currentQty + r.group.totalDelta).toFixed(3));
+            if (r.exists) {
+              tx.update(r.ref, { qty: nextQty, updatedAt: serverTimestamp() });
+            } else {
+              tx.set(
+                r.ref,
+                serializeStockItem(
+                  {
+                    id: r.group.stkId,
+                    productId: r.group.productId,
+                    variantId: r.group.variantId,
+                    warehouseId: r.group.warehouseId,
+                    qty: nextQty,
+                    storeId: r.group.storeId,
+                    createdAt: new Date().toISOString(),
+                    updatedAt: new Date().toISOString(),
+                    createdBy: ctx.uid,
+                  },
+                  tenantCtx
+                )
+              );
+            }
+            let runningQty = r.currentQty;
+            for (const rawMov of r.group.movements) {
+              runningQty = Number((runningQty + rawMov.qtyDelta).toFixed(3));
+              const mov = { ...rawMov, qtyAfter: runningQty };
+              tx.set(
+                doc(firestoreDb, wsPath, 'stockMovements', sanitizeId(mov.id)),
+                serializeStockMovement(mov, tenantCtx)
+              );
+            }
+          }
+
+          tx.set(doc(firestoreDb, wsPath, 'returns', sanitizeId(ret.id)), serializeReturnDoc(ret, tenantCtx));
+
+          if (sale) {
+            tx.update(saleRef, {
+              status: sale.status,
+              updatedAt: serverTimestamp(),
+            });
+          }
+
+          if (sh && shiftRef && shiftSnap?.exists() && shiftSnap.data()?.status === 'open') {
+            const refundDelta = typeof payload.shiftCashRefundDelta === 'number' ? payload.shiftCashRefundDelta : null;
+            const sData = shiftSnap.data();
+            tx.update(shiftRef, {
+              cashRefundsTotal:
+                refundDelta !== null
+                  ? Number(sData.cashRefundsTotal || 0) + refundDelta
+                  : sh.cashRefundsTotal,
+              expectedCash:
+                refundDelta !== null
+                  ? Number(sData.expectedCash || 0) - refundDelta
+                  : sh.expectedCash,
+              updatedAt: serverTimestamp(),
+            });
+          }
+
+          if (acc && accRef && accSnap?.exists()) {
+            const accDelta = typeof payload.accountDelta === 'number' ? payload.accountDelta : null;
+            const currentBalance = Number(accSnap.data().balance || 0);
+            tx.update(accRef, {
+              balance: accDelta !== null ? currentBalance + accDelta : acc.balance,
+              updatedAt: serverTimestamp(),
+            });
+          }
+
+          if (payload.auditId) {
+            const aud = snapshot.auditLogs.find((a) => a.id === String(payload.auditId));
+            if (aud) {
+              tx.set(
+                doc(firestoreDb, wsPath, 'auditLogs', sanitizeId(aud.id)),
+                serializeAuditLog(aud, tenantCtx)
+              );
+            }
+          }
+
+          tx.set(syncedOpRef, {
+            id: opId,
+            opType: clampStr(item.type, 80),
+            actorUid: ctx.uid,
+            storeId: storeIdForOp,
+            ownerUid: ctx.ownerUid,
+            memberUids: Array.from(new Set([ctx.ownerUid, ...ctx.memberUids])).slice(0, 50),
+            createdBy: ctx.uid,
+            createdAt: serverTimestamp(),
             updatedAt: serverTimestamp(),
           });
-        }
-        if (payload.shiftId) {
-          const sh = snapshot.cashShifts.find((s) => s.id === String(payload.shiftId));
-          if (sh) {
-            const refundDelta = typeof payload.shiftCashRefundDelta === 'number' ? payload.shiftCashRefundDelta : null;
-            batch.update(doc(firestoreDb, wsPath, 'cashShifts', sanitizeId(sh.id)), {
-              cashRefundsTotal: refundDelta !== null ? increment(refundDelta) : sh.cashRefundsTotal,
-              expectedCash: refundDelta !== null ? increment(-refundDelta) : sh.expectedCash,
-              updatedAt: serverTimestamp(),
-            });
-          }
-        }
-        if (payload.accountId) {
-          const acc = snapshot.accounts.find((a) => a.id === String(payload.accountId));
-          if (acc) {
-            const accDelta = typeof payload.accountDelta === 'number' ? payload.accountDelta : null;
-            batch.update(doc(firestoreDb, wsPath, 'accounts', sanitizeId(acc.id)), {
-              balance: accDelta !== null ? increment(accDelta) : acc.balance,
-              updatedAt: serverTimestamp(),
-            });
-          }
-        }
-        if (payload.auditId) {
-          const aud = snapshot.auditLogs.find((a) => a.id === String(payload.auditId));
-          if (aud) {
-            batch.set(doc(firestoreDb, wsPath, 'auditLogs', sanitizeId(aud.id)), serializeAuditLog(aud, tenantCtx));
-          }
-        }
-        markSyncedInBatch(batch);
-        await batch.commit();
+        });
         return;
       }
 
@@ -4029,15 +4381,23 @@ export async function pushSyncItemToFirestore(
             batch.set(credRef, credSer);
           }
 
-          const cleanEmail = (emp?.googleEmail || user.googleEmail || '').trim().toLowerCase();
-          const prevEmail =
+          const cleanPhoneEmail = phoneToInternalEmail(emp?.phone || user.phone);
+          const cleanLegacyEmail = (emp?.googleEmail || user.googleEmail || '').trim().toLowerCase();
+          const activeEmailsForStaff = Array.from(new Set([cleanPhoneEmail, cleanLegacyEmail].filter(Boolean)));
+
+          const prevPhoneEmail =
+            typeof payload.previousPhone === 'string' && payload.previousPhone
+              ? phoneToInternalEmail(payload.previousPhone)
+              : '';
+          const prevLegacyEmail =
             typeof payload.previousGoogleEmail === 'string'
               ? payload.previousGoogleEmail.trim().toLowerCase()
               : '';
+          const prevEmails = Array.from(new Set([prevPhoneEmail, prevLegacyEmail].filter(Boolean)));
 
-          // Maintain zero-PII staffInvites/{emailHash} so employee role/stores/permissions apply on Google sign-in
-          if (cleanEmail) {
-            const emailHash = await sha256Hex(cleanEmail);
+          // Maintain zero-PII staffInvites/{emailHash} so phone or legacy staff accounts map to role/stores/permissions
+          for (const targetEmail of activeEmailsForStaff) {
+            const emailHash = await sha256Hex(targetEmail);
             const invRef = doc(firestoreDb, wsPath, 'staffInvites', emailHash);
             const invSnap = await getDoc(invRef);
             const invSer = serializeStaffInvite(
@@ -4061,9 +4421,12 @@ export async function pushSyncItemToFirestore(
               batch.set(invRef, invSer);
             }
           }
-          if (prevEmail && prevEmail !== cleanEmail) {
-            const oldHash = await sha256Hex(prevEmail);
-            batch.delete(doc(firestoreDb, wsPath, 'staffInvites', oldHash));
+
+          for (const oldEmail of prevEmails) {
+            if (!activeEmailsForStaff.includes(oldEmail)) {
+              const oldHash = await sha256Hex(oldEmail);
+              batch.delete(doc(firestoreDb, wsPath, 'staffInvites', oldHash));
+            }
           }
 
           // Update workspace invitedEmails & adminUids cleanly
@@ -4080,21 +4443,34 @@ export async function pushSyncItemToFirestore(
           let nextInvited = [...liveInvited];
           let invitedChanged = false;
 
-          if (prevEmail && prevEmail !== cleanEmail && !isBootstrappedAdminEmail(prevEmail)) {
-            const stillUsed =
-              snapshot.users.some((u) => u.isActive && u.googleEmail?.trim().toLowerCase() === prevEmail) ||
-              snapshot.employees.some((e) => e.googleEmail?.trim().toLowerCase() === prevEmail);
-            if (!stillUsed && nextInvited.includes(prevEmail)) {
-              nextInvited = nextInvited.filter((e) => e !== prevEmail);
+          for (const oldEmail of prevEmails) {
+            if (!activeEmailsForStaff.includes(oldEmail) && !isBootstrappedAdminEmail(oldEmail)) {
+              const stillUsed =
+                snapshot.users.some(
+                  (u) =>
+                    u.isActive &&
+                    (phoneToInternalEmail(u.phone) === oldEmail ||
+                      u.googleEmail?.trim().toLowerCase() === oldEmail)
+                ) ||
+                snapshot.employees.some(
+                  (e) =>
+                    phoneToInternalEmail(e.phone) === oldEmail ||
+                    e.googleEmail?.trim().toLowerCase() === oldEmail
+                );
+              if (!stillUsed && nextInvited.includes(oldEmail)) {
+                nextInvited = nextInvited.filter((e) => e !== oldEmail);
+                invitedChanged = true;
+              }
+            }
+          }
+          for (const targetEmail of activeEmailsForStaff) {
+            if (!nextInvited.includes(targetEmail)) {
+              nextInvited = Array.from(new Set([...nextInvited, targetEmail])).slice(0, 50);
               invitedChanged = true;
             }
           }
-          if (cleanEmail && !nextInvited.includes(cleanEmail)) {
-            nextInvited = Array.from(new Set([...nextInvited, cleanEmail])).slice(0, 50);
-            invitedChanged = true;
-          }
 
-          // Also sync matching workspace member doc if they have already claimed a Google seat
+          // Also sync matching workspace member doc if they have already claimed a seat
           const membersSnap = await getDocs(collection(firestoreDb, wsPath, 'members'));
           const rolePerms =
             user.customPermissions ??
@@ -4151,24 +4527,33 @@ export async function pushSyncItemToFirestore(
         });
         if (ctx.isWsAdmin) {
           const credRef = doc(firestoreDb, wsPath, 'staffCredentials', staffId);
-          let deletedEmail =
-            typeof payload.deletedGoogleEmail === 'string'
-              ? payload.deletedGoogleEmail.trim().toLowerCase()
-              : '';
-          if (!deletedEmail) {
-            try {
-              const credSnap = await getDoc(credRef);
-              if (credSnap.exists() && credSnap.data().googleEmail) {
-                deletedEmail = String(credSnap.data().googleEmail).trim().toLowerCase();
+          const emailsToDelete = new Set<string>();
+          if (typeof payload.deletedPhone === 'string' && payload.deletedPhone) {
+            const pe = phoneToInternalEmail(payload.deletedPhone);
+            if (pe) emailsToDelete.add(pe);
+          }
+          if (typeof payload.deletedGoogleEmail === 'string' && payload.deletedGoogleEmail.trim()) {
+            emailsToDelete.add(payload.deletedGoogleEmail.trim().toLowerCase());
+          }
+          try {
+            const credSnap = await getDoc(credRef);
+            if (credSnap.exists()) {
+              const cd = credSnap.data();
+              if (cd.phone) {
+                const pe = phoneToInternalEmail(String(cd.phone));
+                if (pe) emailsToDelete.add(pe);
               }
-            } catch {
-              // ignore if credential doc does not exist
+              if (cd.googleEmail) {
+                emailsToDelete.add(String(cd.googleEmail).trim().toLowerCase());
+              }
             }
+          } catch {
+            // ignore if credential doc does not exist
           }
           batch.delete(credRef);
 
-          if (deletedEmail) {
-            const emailHash = await sha256Hex(deletedEmail);
+          for (const em of emailsToDelete) {
+            const emailHash = await sha256Hex(em);
             batch.delete(doc(firestoreDb, wsPath, 'staffInvites', emailHash));
           }
 
@@ -4186,13 +4571,25 @@ export async function pushSyncItemToFirestore(
           const wsData = wsSnap.data();
           if (wsData) {
             const wsPatch: Record<string, unknown> = {};
-            if (deletedEmail && !isBootstrappedAdminEmail(deletedEmail) && Array.isArray(wsData.invitedEmails)) {
-              const stillUsed =
-                snapshot.users.some((u) => u.isActive && u.googleEmail?.trim().toLowerCase() === deletedEmail) ||
-                snapshot.employees.some((e) => e.googleEmail?.trim().toLowerCase() === deletedEmail);
-              if (!stillUsed) {
+            if (emailsToDelete.size > 0 && Array.isArray(wsData.invitedEmails)) {
+              const removable = new Set<string>();
+              for (const em of emailsToDelete) {
+                if (isBootstrappedAdminEmail(em)) continue;
+                const stillUsed =
+                  snapshot.users.some(
+                    (u) =>
+                      u.isActive &&
+                      (phoneToInternalEmail(u.phone) === em || u.googleEmail?.trim().toLowerCase() === em)
+                  ) ||
+                  snapshot.employees.some(
+                    (e) =>
+                      phoneToInternalEmail(e.phone) === em || e.googleEmail?.trim().toLowerCase() === em
+                  );
+                if (!stillUsed) removable.add(em);
+              }
+              if (removable.size > 0) {
                 wsPatch.invitedEmails = (wsData.invitedEmails as string[]).filter(
-                  (e) => String(e).toLowerCase() !== deletedEmail
+                  (e) => !removable.has(String(e).toLowerCase())
                 );
               }
             }
@@ -4421,6 +4818,7 @@ export async function pushSyncItemToFirestore(
       }
     }
   } catch (err) {
+    if (err instanceof BusinessRuleError) throw err;
     handleFirestoreError(err, OperationType.WRITE, `${wsPath}/${item.type}`);
   }
 }

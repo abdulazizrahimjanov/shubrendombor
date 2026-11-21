@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Download, WifiOff, RefreshCw } from 'lucide-react';
+import { Download, WifiOff } from 'lucide-react';
 import { useAppStore } from '../store/useAppStore';
 import { useT } from '../i18n';
 
@@ -121,17 +121,14 @@ export const PWAInstallButton: React.FC = () => {
 
 export const OfflineIndicator: React.FC = () => {
   const isOnline = useAppStore((s) => s.isOnline);
-  const syncStatus = useAppStore((s) => s.syncStatus);
   const cloudError = useAppStore((s) => s.cloudError);
   const cloudConnected = useAppStore((s) => s.cloudConnected);
   const pendingCount = useAppStore((s) => s.db?.offlineQueue.length ?? 0);
-  const forceSyncNow = useAppStore((s) => s.forceSyncNow);
   const clearCloudError = useAppStore((s) => s.clearCloudError);
-  const notify = useAppStore((s) => s.notify);
   const t = useT();
 
   const showError = Boolean(cloudError && (cloudConnected || !isOnline));
-  if (isOnline && pendingCount === 0 && syncStatus !== 'syncing' && !showError) return null;
+  if (isOnline && !showError) return null;
 
   return (
     <div
@@ -149,53 +146,16 @@ export const OfflineIndicator: React.FC = () => {
             {pendingCount > 0 ? ` (${pendingCount})` : ''}
           </span>
         </div>
-      ) : syncStatus === 'syncing' ? (
-        <div className="flex items-center gap-2">
-          <RefreshCw className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 animate-spin shrink-0" />
-          <span>{t.common.syncing}</span>
-        </div>
-      ) : showError ? (
-        <>
-          <span className="line-clamp-2">{cloudError}</span>
-          <div className="flex items-center gap-1.5 shrink-0">
-            <button
-              type="button"
-              onClick={async () => {
-                const res = await forceSyncNow();
-                if (res.ok) notify(`${res.synced} ta yozuv sinxronlandi`, 'success');
-                else if (res.error) notify(res.error, 'error');
-              }}
-              className="inline-flex items-center gap-1 rounded bg-red-600 px-2 py-1 text-[11px] text-white hover:bg-red-700"
-            >
-              <RefreshCw className="w-3 h-3" />
-              {t.common.syncNow}
-            </button>
-            <button
-              type="button"
-              onClick={clearCloudError}
-              className="px-1.5 py-1 text-[11px] opacity-75 hover:opacity-100"
-              aria-label={t.common.close}
-            >
-              ✕
-            </button>
-          </div>
-        </>
       ) : (
         <>
-          <span>
-            {t.common.syncPending}: {pendingCount}
-          </span>
+          <span className="line-clamp-2">{cloudError}</span>
           <button
             type="button"
-            onClick={async () => {
-              const res = await forceSyncNow();
-              if (res.ok) notify(`${res.synced} ta yozuv sinxronlandi`, 'success');
-              else if (res.error) notify(res.error, 'error');
-            }}
-            className="inline-flex items-center gap-1 rounded bg-amber-600 px-2 py-1 text-[11px] text-white hover:bg-amber-700 shrink-0"
+            onClick={clearCloudError}
+            className="px-1.5 py-1 text-[11px] opacity-75 hover:opacity-100 shrink-0"
+            aria-label={t.common.close}
           >
-            <RefreshCw className="w-3 h-3" />
-            {t.common.syncNow}
+            ✕
           </button>
         </>
       )}

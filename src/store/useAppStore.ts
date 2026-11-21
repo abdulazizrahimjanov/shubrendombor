@@ -44,15 +44,21 @@ import { getMensClothingCategories } from '../data/seed';
 import { Language } from '../i18n';
 import {
   auth,
+  createStaffWithEmailPassword,
+  deriveFirebaseAuthPassword,
   ensureFirestoreNetwork,
   formatFirebaseError,
+  normalizePhoneDigits,
+  phoneToInternalEmail,
   probeFirestoreConnection,
-  signInWithGooglePopup,
+  provisionStaffAccountOnSecondaryApp,
+  signInStaffWithEmailPassword,
   signOutFirebase,
   watchAuthState,
 } from '../firebase';
 import {
   ADMIN_BOOTSTRAPPED_EMAILS,
+  BusinessRuleError,
   isBootstrappedAdminEmail,
   bootstrapOrJoinWorkspace,
   checkWorkspaceSyncHealth,
@@ -64,7 +70,6 @@ import {
   savePreCloudSafetyBackup,
   stockItemDocId,
   subscribeWorkspaceRealtime,
-  verifyWorkspaceServerSync,
   WorkspaceContext,
 } from '../data/firebaseSync';
 
@@ -75,11 +80,9 @@ const HELD_CARTS_KEY = 'shu_brend_held_carts_v1';
 
 let unsubscribeRealtime: (() => void) | null = null;
 let unsubscribeAuth: (() => void) | null = null;
-let syncIntervalHandle: ReturnType<typeof setInterval> | null = null;
 let activeInitPromise: Promise<void> | null = null;
 let activeConnectPromise: Promise<WorkspaceContext | null> | null = null;
 let activeSyncQueuePromise: Promise<number> | null = null;
-let periodicCheckRunning = false;
 
 export function uid(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
@@ -147,13 +150,11 @@ interface AppState {
   getCurrentUser: () => User | null;
   can: (perm: Permission) => boolean;
   canAccessStore: (storeId: string) => boolean;
-  loginWithPhone: (phone: string, password: string) => boolean;
-  loginWithGoogle: (options?: { linkOnly?: boolean }) => Promise<{ ok: boolean; error?: string }>;
+  loginWithPhone: (phone: string, password: string) => Promise<boolean>;
   switchUserByPin: (pin: string) => User | null;
   verifyManagerPin: (pin: string) => User | null;
   logout: () => void;
   checkAndSyncNow: () => Promise<void>;
-  forceSyncNow: () => Promise<{ ok: boolean; synced: number; error?: string }>;
   clearCloudError: () => void;
 
   // Held Carts
@@ -413,14 +414,28 @@ function isPermissionError(err: unknown): boolean {
   return low.includes('permission') || low.includes('insufficient') || low.includes('authinfo');
 }
 
+function isNetworkFailureError(err: unknown): boolean {
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) return true;
+  const msg = (err instanceof Error ? err.message : String(err ?? '')).toLowerCase();
+  return (
+    msg.includes('unavailable') ||
+    msg.includes('client is offline') ||
+    msg.includes('network-request-failed') ||
+    msg.includes('timeout') ||
+    msg.includes('failed to fetch')
+  );
+}
+
+function phoneFromInternalEmail(email?: string | null): string {
+  const m = String(email || '').trim().toLowerCase().match(/^staff\.([0-9]{4,18})@shubrend\.internal$/);
+  return m ? m[1] : '';
+}
+
 function phonesMatch(a: string, b: string): boolean {
-  const d1 = String(a || '').replace(/\D/g, '');
-  const d2 = String(b || '').replace(/\D/g, '');
+  const d1 = normalizePhoneDigits(a);
+  const d2 = normalizePhoneDigits(b);
   if (!d1 || !d2) return false;
-  if (d1 === d2) return true;
-  if (d1.length === 9 && d2 === `998${d1}`) return true;
-  if (d2.length === 9 && d1 === `998${d2}`) return true;
-  return false;
+  return d1 === d2;
 }
 
 function matchesSecret(plain: string | undefined, hash: string | undefined, input: string): boolean {
@@ -541,7 +556,8 @@ let migratedNamesCloudOnce = false;
 export const useAppStore = create<AppState>((set, get) => {
   const syncOrEnqueue = async (
     nextDb: DatabaseSnapshot,
-    opInput: Omit<OfflineSyncItem, 'idempotencyKey'>
+    opInput: Omit<OfflineSyncItem, 'idempotencyKey'>,
+    options?: { strict?: boolean }
   ) => {
     const op: OfflineSyncItem = {
       ...opInput,
@@ -549,8 +565,49 @@ export const useAppStore = create<AppState>((set, get) => {
     };
     const { cloudConnected, workspaceContext, isOnline } = get();
 
-    // Always persist immediately on device first (offline-first PWA)
-    if (!isOnline) {
+    // Strict financial/stock operations (sales, returns, deferred payments):
+    // When online & connected, commit atomically to Firestore BEFORE mutating local stock/sales state!
+    if (options?.strict && isOnline && cloudConnected && workspaceContext) {
+      set({ syncStatus: 'syncing' });
+      try {
+        await pushSyncItemToFirestore(workspaceContext, op, nextDb);
+        await repository.save(nextDb);
+        const syncedAt = new Date().toISOString();
+        set({
+          db: nextDb,
+          syncStatus: get().isOnline ? 'online' : 'offline',
+          lastSyncAt: syncedAt,
+          lastSyncCheckAt: syncedAt,
+          cloudError: null,
+        });
+        return;
+      } catch (err) {
+        set({ syncStatus: get().isOnline ? 'online' : 'offline' });
+        if (err instanceof BusinessRuleError) {
+          throw err;
+        }
+        if (isPermissionError(err)) {
+          const msg =
+            get().language === 'ru'
+              ? 'У вас недостаточно прав для этой операции'
+              : 'Ushbu amalni bulutga yozish uchun ruxsatingiz yetarli emas';
+          set({ cloudError: msg });
+          throw new Error(msg);
+        }
+        if (!isNetworkFailureError(err)) {
+          throw new Error(formatFirebaseError(err, get().language));
+        }
+        // Real offline/network drop -> fall through to queue locally
+        nextDb.sales = nextDb.sales.map((s) =>
+          s.id === (op.payload as Record<string, unknown>)?.saleId
+            ? { ...s, offlineCreated: true, syncedAt: undefined }
+            : s
+        );
+      }
+    }
+
+    // Offline or fallback queue path
+    if (!isOnline || (options?.strict && cloudConnected && workspaceContext)) {
       if (!nextDb.offlineQueue.some((q) => q.id === op.id)) {
         nextDb.offlineQueue.push(op);
       }
@@ -574,10 +631,14 @@ export const useAppStore = create<AppState>((set, get) => {
           cloudError: null,
         });
       } catch (err) {
+        if (err instanceof BusinessRuleError) {
+          throw err;
+        }
         if (isPermissionError(err)) {
-          const msg = get().language === 'ru'
-            ? 'У вас недостаточно прав для этой операции'
-            : "Ushbu amalni bulutga yozish uchun ruxsatingiz yetarli emas";
+          const msg =
+            get().language === 'ru'
+              ? 'У вас недостаточно прав для этой операции'
+              : "Ushbu amalni bulutga yozish uchun ruxsatingiz yetarli emas";
           get().notify(msg, 'error');
           set({ syncStatus: get().isOnline ? 'online' : 'offline', cloudError: msg });
         } else {
@@ -603,19 +664,23 @@ export const useAppStore = create<AppState>((set, get) => {
     ctx: WorkspaceContext
   ): { user: User | null; mutatedSnapshot: boolean } => {
     const email = (fbUser.email || '').trim().toLowerCase();
+    const internalPhoneDigits = phoneFromInternalEmail(email);
     let mutated = false;
     let matched =
+      (internalPhoneDigits
+        ? snapshot.users.find((u) => u.isActive && phonesMatch(u.phone, internalPhoneDigits))
+        : undefined) ??
       snapshot.users.find((u) => u.isActive && u.googleEmail?.trim().toLowerCase() === email) ??
-      (ctx.staffId ? snapshot.users.find((u) => u.id === ctx.staffId || snapshot.employees.some((e) => e.id === ctx.staffId && e.userId === u.id)) : undefined);
+      (ctx.staffId
+        ? snapshot.users.find(
+            (u) =>
+              u.id === ctx.staffId ||
+              snapshot.employees.some((e) => e.id === ctx.staffId && e.userId === u.id)
+          )
+        : undefined);
 
     if (!matched && isBootstrappedAdminEmail(email)) {
       matched = snapshot.users.find((u) => u.isActive && u.roleId === 'owner') ?? snapshot.users[0];
-      if (matched && (!matched.googleEmail || matched.googleEmail !== email)) {
-        matched.googleEmail = email;
-        const emp = snapshot.employees.find((e) => e.userId === matched!.id);
-        if (emp) emp.googleEmail = email;
-        mutated = true;
-      }
     }
 
     if (!matched && ctx.uid) {
@@ -625,14 +690,13 @@ export const useAppStore = create<AppState>((set, get) => {
       const generatedPin = String(Math.floor(1000 + Math.random() * 8999));
       matched = {
         id: newUserId,
-        name: fbUser.displayName || email.split('@')[0] || 'Xodim',
-        phone: '',
+        name: fbUser.displayName || (internalPhoneDigits ? `+${internalPhoneDigits}` : email.split('@')[0]) || 'Xodim',
+        phone: internalPhoneDigits ? `+${internalPhoneDigits}` : '',
         password: '',
         pin: generatedPin,
         pinHash: hashStaffSecret(generatedPin),
         hashAlgo: 'sha256',
         authMigrated: true,
-        googleEmail: email,
         roleId: ctx.roleId,
         assignedStoreIds: ctx.assignedStoreIds.length ? ctx.assignedStoreIds : [fallbackStoreId],
         isActive: true,
@@ -755,7 +819,11 @@ export const useAppStore = create<AppState>((set, get) => {
 
             if (!resolvedUser && fbUser.email) {
               const email = fbUser.email.trim().toLowerCase();
+              const internalDigits = phoneFromInternalEmail(email);
               resolvedUser =
+                (internalDigits
+                  ? hydratedDb.users.find((u) => u.isActive && phonesMatch(u.phone, internalDigits))
+                  : undefined) ??
                 hydratedDb.users.find((u) => u.isActive && u.googleEmail?.trim().toLowerCase() === email) ??
                 (isBootstrappedAdminEmail(email)
                   ? hydratedDb.users.find((u) => u.isActive && u.roleId === 'owner') ?? null
@@ -1178,79 +1246,6 @@ export const useAppStore = create<AppState>((set, get) => {
           }
         });
       }
-
-      if (!syncIntervalHandle && typeof window !== 'undefined') {
-        const runPeriodicSyncCheck = async () => {
-          if (periodicCheckRunning) return;
-          periodicCheckRunning = true;
-          try {
-            const lang = get().language;
-            const navigatorOnline = typeof navigator !== 'undefined' ? navigator.onLine !== false : true;
-            const checkIso = new Date().toISOString();
-
-            if (!navigatorOnline) {
-              set({
-                isOnline: false,
-                syncStatus: 'offline',
-                lastSyncCheckAt: checkIso,
-              });
-              return;
-            }
-
-            const { cloudConnected, cloudConnecting, workspaceContext, db: latestDb } = get();
-
-            if (cloudConnected && workspaceContext) {
-              const serverAlive = await verifyWorkspaceServerSync(workspaceContext.workspaceId);
-              if (serverAlive) {
-                set({ isOnline: true, lastSyncCheckAt: checkIso });
-                if ((latestDb?.offlineQueue.length ?? 0) > 0) {
-                  await get().syncOfflineQueue();
-                } else {
-                  set({
-                    syncStatus: 'online',
-                    lastSyncAt: new Date().toISOString(),
-                    cloudError: null,
-                  });
-                }
-              } else {
-                const probe = await probeFirestoreConnection(lang);
-                set({
-                  isOnline: navigatorOnline,
-                  syncStatus: probe.ok ? 'online' : 'offline',
-                  lastSyncCheckAt: checkIso,
-                  cloudError: probe.ok
-                    ? null
-                    : probe.error ||
-                      (lang === 'ru'
-                        ? 'Не удалось проверить серверную синхронизацию Firebase'
-                        : "Firebase serveri bilan sinxronizatsiya tekshiruvidan o'tmadi"),
-                });
-              }
-            } else {
-              const probe = await probeFirestoreConnection(lang);
-              if (!probe.ok) {
-                set({
-                  isOnline: navigatorOnline,
-                  syncStatus: 'offline',
-                  lastSyncCheckAt: checkIso,
-                  ...(get().cloudConnected || !navigatorOnline ? { cloudError: probe.error ?? null } : {}),
-                });
-                return;
-              }
-              set({ isOnline: true, lastSyncCheckAt: checkIso });
-              if (!cloudConnected && !cloudConnecting && auth.currentUser) {
-                await connectFirebaseUser(auth.currentUser, { setSessionIfMissing: true });
-              }
-            }
-          } finally {
-            periodicCheckRunning = false;
-          }
-        };
-
-        syncIntervalHandle = setInterval(() => {
-          void runPeriodicSyncCheck();
-        }, 15000);
-      }
       })().finally(() => {
         activeInitPromise = null;
       });
@@ -1345,61 +1340,105 @@ export const useAppStore = create<AppState>((set, get) => {
       return user.assignedStoreIds.includes(storeId);
     },
 
-    loginWithPhone: (phone, password) => {
-      const { db } = get();
+    loginWithPhone: async (phone, password) => {
+      const { db, isOnline } = get();
       if (!db) return false;
       const secret = password.trim();
-      if (!secret) return false;
-      const user = db.users.find(
+      const digits = normalizePhoneDigits(phone);
+      if (!secret || !digits) return false;
+
+      const localMatch = db.users.find(
         (u) =>
           u.isActive &&
           phonesMatch(u.phone, phone) &&
           (matchesSecret(u.password, u.passwordHash, secret) ||
             matchesSecret(u.pin, u.pinHash, secret))
       );
-      if (!user) return false;
-      localStorage.setItem(SESSION_KEY, user.id);
-      const fbUser = auth.currentUser;
-      set({
-        currentUserId: user.id,
-        activeStoreId: resolveDefaultStoreForUser(user, db),
-        ...(!fbUser
-          ? {
-              cloudConnected: false,
-              firebaseUid: null,
-              firebaseEmail: null,
-              workspaceContext: null,
-              lastSyncAt: null,
+
+      // Offline fallback when local credentials exist on device
+      if (!isOnline) {
+        if (!localMatch) return false;
+        localStorage.setItem(SESSION_KEY, localMatch.id);
+        set({
+          currentUserId: localMatch.id,
+          activeStoreId: resolveDefaultStoreForUser(localMatch, db),
+        });
+        return true;
+      }
+
+      const internalEmail = phoneToInternalEmail(phone);
+      const authPass = deriveFirebaseAuthPassword(phone, secret);
+      let fbUser: FirebaseUser | null = null;
+
+      try {
+        fbUser = await signInStaffWithEmailPassword(internalEmail, authPass);
+      } catch (err) {
+        const code =
+          typeof err === 'object' && err !== null && 'code' in err
+            ? String((err as { code?: unknown }).code)
+            : '';
+
+        if (localMatch) {
+          // Try alternate secret if account was registered with password while PIN was typed (or vice versa)
+          const altSecrets = [localMatch.password, localMatch.pin]
+            .map((s) => (s || '').trim())
+            .filter((s) => s && s !== secret);
+          for (const alt of altSecrets) {
+            try {
+              fbUser = await signInStaffWithEmailPassword(
+                internalEmail,
+                deriveFirebaseAuthPassword(phone, alt)
+              );
+              break;
+            } catch {
+              // continue trying
             }
-          : {}),
+          }
+          // First-time staff provisioning into Firebase Auth when local record matches
+          if (!fbUser && (code === 'auth/user-not-found' || code === 'auth/invalid-credential')) {
+            try {
+              fbUser = await createStaffWithEmailPassword(internalEmail, authPass);
+            } catch {
+              // Ignore if password on Auth differs or creation blocked; localMatch fallback handles below
+            }
+          }
+        }
+      }
+
+      if (fbUser) {
+        if (localMatch) {
+          localStorage.setItem(SESSION_KEY, localMatch.id);
+          set({
+            currentUserId: localMatch.id,
+            activeStoreId: resolveDefaultStoreForUser(localMatch, db),
+          });
+        }
+        try {
+          await connectFirebaseUser(fbUser, {
+            forceInteractiveLogin: !localMatch,
+            setSessionIfMissing: true,
+          });
+          return true;
+        } catch (err) {
+          if (!localMatch) {
+            set({ cloudError: formatFirebaseError(err, get().language) });
+            return false;
+          }
+        }
+      }
+
+      if (!localMatch) return false;
+
+      localStorage.setItem(SESSION_KEY, localMatch.id);
+      const currentFb = auth.currentUser;
+      set({
+        currentUserId: localMatch.id,
+        activeStoreId: resolveDefaultStoreForUser(localMatch, db),
       });
-      if (fbUser && !get().cloudConnected && !get().cloudConnecting && get().isOnline) {
-        void connectFirebaseUser(fbUser, { setSessionIfMissing: false });
-      } else if (!fbUser && get().isOnline) {
-        get().notify(
-          get().language === 'ru'
-            ? 'Вход выполнен локально. Подключите Google в шапке для синхронизации между устройствами'
-            : "Qurilmaga kirildi. Boshqa qurilmalarga sinxronlash uchun yuqoridan Google bilan ulang",
-          'info'
-        );
+      if (currentFb && !get().cloudConnected && !get().cloudConnecting) {
+        void connectFirebaseUser(currentFb, { setSessionIfMissing: false });
       }
       return true;
-    },
-
-    loginWithGoogle: async (options) => {
-      try {
-        set({ cloudConnecting: true, cloudError: null });
-        const fbUser = await signInWithGooglePopup();
-        await connectFirebaseUser(fbUser, {
-          forceInteractiveLogin: !options?.linkOnly,
-          setSessionIfMissing: true,
-        });
-        return { ok: true };
-      } catch (err) {
-        const msg = formatFirebaseError(err, get().language);
-        set({ cloudConnecting: false, cloudError: msg });
-        return { ok: false, error: msg };
-      }
     },
 
     clearCloudError: () => set({ cloudError: null }),
@@ -1442,56 +1481,6 @@ export const useAppStore = create<AppState>((set, get) => {
           syncStatus: 'online',
         });
       }
-    },
-
-    forceSyncNow: async () => {
-      const lang = get().language;
-      const probe = await probeFirestoreConnection(lang);
-      const checkIso = new Date().toISOString();
-      if (!probe.ok) {
-        const errMsg = probe.error || (lang === 'ru' ? 'Нет подключения к серверу Firebase' : "Firebase serveri bilan aloqa yo'q");
-        set({
-          isOnline: typeof navigator !== 'undefined' ? navigator.onLine : false,
-          syncStatus: 'offline',
-          lastSyncCheckAt: checkIso,
-          cloudError: errMsg,
-        });
-        return { ok: false, synced: 0, error: errMsg };
-      }
-
-      set({ isOnline: true, lastSyncCheckAt: checkIso });
-      if (!get().cloudConnected && auth.currentUser) {
-        await connectFirebaseUser(auth.currentUser, { setSessionIfMissing: true });
-      }
-
-      const ctx = get().workspaceContext;
-      if (!get().cloudConnected || !ctx) {
-        const msg =
-          lang === 'ru'
-            ? 'Для облачной синхронизации войдите через Google аккаунт'
-            : "Bulutli sinxronlash uchun Google hisobingiz bilan ulaning";
-        return { ok: false, synced: 0, error: msg };
-      }
-
-      const alive = await verifyWorkspaceServerSync(ctx.workspaceId);
-      if (!alive) {
-        const msg =
-          lang === 'ru'
-            ? 'Сервер базы данных Firebase не отвечает'
-            : "Firebase ma'lumotlar bazasi javob bermayapti";
-        set({ cloudError: msg, syncStatus: 'offline' });
-        return { ok: false, synced: 0, error: msg };
-      }
-
-      const synced = await get().syncOfflineQueue();
-      const doneIso = new Date().toISOString();
-      set({
-        syncStatus: 'online',
-        lastSyncAt: doneIso,
-        lastSyncCheckAt: doneIso,
-        cloudError: null,
-      });
-      return { ok: true, synced };
     },
 
     switchUserByPin: (pin) => {
@@ -1985,13 +1974,17 @@ export const useAppStore = create<AppState>((set, get) => {
       };
 
       nextDb.sales.unshift(sale);
-      await syncOrEnqueue(nextDb, {
-        id: uid('sync'),
-        type: 'sale_deferred',
-        payload: { saleId, storeId: input.storeId },
-        createdAt: nowIso,
-        attempts: 0,
-      });
+      await syncOrEnqueue(
+        nextDb,
+        {
+          id: uid('sync'),
+          type: 'sale_deferred',
+          payload: { saleId, storeId: input.storeId },
+          createdAt: nowIso,
+          attempts: 0,
+        },
+        { strict: true }
+      );
       return sale;
     },
 
@@ -2139,6 +2132,29 @@ export const useAppStore = create<AppState>((set, get) => {
         }
       }
 
+      // Pre-validate available stock per variant before mutating stock/accounts
+      if (!nextDb.settings.allowNegativeStock) {
+        const neededByVariant = new Map<string, { qty: number; name: string }>();
+        for (const it of sale.items) {
+          const prev = neededByVariant.get(it.variantId);
+          neededByVariant.set(it.variantId, {
+            qty: (prev?.qty ?? 0) + it.qty,
+            name: it.productName,
+          });
+        }
+        for (const [variantId, need] of neededByVariant.entries()) {
+          const available =
+            nextDb.stockItems.find(
+              (s) => s.variantId === variantId && s.warehouseId === sale.warehouseId
+            )?.qty ?? 0;
+          if (available < need.qty) {
+            throw new Error(
+              `"${need.name}" omborda yetarli emas (Qoldiq: ${available}, So'ralgan: ${need.qty}).`
+            );
+          }
+        }
+      }
+
       const movementIds: string[] = [];
       sale.items.forEach((it) => {
         const mov = mutateStock(nextDb, {
@@ -2157,9 +2173,9 @@ export const useAppStore = create<AppState>((set, get) => {
         movementIds.push(mov.id);
       });
 
-      const activeShift =
-        nextDb.cashShifts.find((s) => s.status === 'open' && s.storeId === sale.storeId) ??
-        nextDb.cashShifts.find((s) => s.status === 'open');
+      const activeShift = nextDb.cashShifts.find(
+        (s) => s.status === 'open' && s.storeId === sale.storeId
+      );
       const cashPaid = payments.filter((p) => p.method === 'cash').reduce((s, p) => s + p.amount, 0);
       const cardPaid = payments
         .filter((p) => ['card', 'uzcard', 'humo', 'visa', 'mastercard', 'unionpay'].includes(p.method))
@@ -2225,31 +2241,35 @@ export const useAppStore = create<AppState>((set, get) => {
       sale.syncedAt = isOnline ? nowIso : undefined;
       sale.updatedAt = nowIso;
 
-      await syncOrEnqueue(nextDb, {
-        id: uid('sync'),
-        type: 'sale_pay_deferred',
-        payload: {
-          saleId: sale.id,
-          receiptNumber: sale.receiptNumber,
-          movementIds,
-          loyaltyTxIds,
-          debtId,
-          accountIds: touchedAccountIds,
-          accountDeltas,
-          customerSpentDelta: customer ? totalAmount : 0,
-          customerOrdersDelta: customer ? 1 : 0,
-          customerDebtDelta: customer ? debtAmount : 0,
-          loyaltyPointsDelta,
-          promoUsedDelta,
-          shiftDeltas: activeShift
-            ? { cashSales: cashPaid, cardSales: cardPaid, otherSales: otherPaid, expectedCash: cashPaid }
-            : undefined,
-          auditId,
-          storeId: sale.storeId,
+      await syncOrEnqueue(
+        nextDb,
+        {
+          id: uid('sync'),
+          type: 'sale_pay_deferred',
+          payload: {
+            saleId: sale.id,
+            receiptNumber: sale.receiptNumber,
+            movementIds,
+            loyaltyTxIds,
+            debtId,
+            accountIds: touchedAccountIds,
+            accountDeltas,
+            customerSpentDelta: customer ? totalAmount : 0,
+            customerOrdersDelta: customer ? 1 : 0,
+            customerDebtDelta: customer ? debtAmount : 0,
+            loyaltyPointsDelta,
+            promoUsedDelta,
+            shiftDeltas: activeShift
+              ? { cashSales: cashPaid, cardSales: cardPaid, otherSales: otherPaid, expectedCash: cashPaid }
+              : undefined,
+            auditId,
+            storeId: sale.storeId,
+          },
+          createdAt: nowIso,
+          attempts: 0,
         },
-        createdAt: nowIso,
-        attempts: 0,
-      });
+        { strict: true }
+      );
       return sale;
     },
 
@@ -2260,19 +2280,45 @@ export const useAppStore = create<AppState>((set, get) => {
       if (!target || target.status !== 'deferred') return;
       const nextDb: DatabaseSnapshot = structuredClone(db);
       nextDb.sales = nextDb.sales.filter((s) => s.id !== saleId);
-      await syncOrEnqueue(nextDb, {
-        id: uid('sync'),
-        type: 'sale_delete_deferred',
-        payload: { saleId, storeId: target.storeId },
-        createdAt: new Date().toISOString(),
-        attempts: 0,
-      });
+      await syncOrEnqueue(
+        nextDb,
+        {
+          id: uid('sync'),
+          type: 'sale_delete_deferred',
+          payload: { saleId, storeId: target.storeId },
+          createdAt: new Date().toISOString(),
+          attempts: 0,
+        },
+        { strict: true }
+      );
     },
 
     completeSale: async (input) => {
       const { db, isOnline } = get();
       if (!db) throw new Error('DB not loaded');
       if (!get().can('use_pos')) throw new Error("Sotuvga ruxsat yo'q");
+      if (!input.items.length) throw new Error("Savat bo'sh");
+      if (!db.settings.allowNegativeStock) {
+        const neededByVariant = new Map<string, { qty: number; name: string }>();
+        for (const it of input.items) {
+          const prev = neededByVariant.get(it.variantId);
+          neededByVariant.set(it.variantId, {
+            qty: (prev?.qty ?? 0) + it.qty,
+            name: it.productName,
+          });
+        }
+        for (const [variantId, need] of neededByVariant.entries()) {
+          const available =
+            db.stockItems.find(
+              (s) => s.variantId === variantId && s.warehouseId === input.warehouseId
+            )?.qty ?? 0;
+          if (available < need.qty) {
+            throw new Error(
+              `"${need.name}" omborda yetarli emas (Qoldiq: ${available}, So'ralgan: ${need.qty}).`
+            );
+          }
+        }
+      }
       const user = get().getCurrentUser();
       const nextDb: DatabaseSnapshot = structuredClone(db);
       const nowIso = new Date().toISOString();
@@ -2431,9 +2477,9 @@ export const useAppStore = create<AppState>((set, get) => {
         movementIds.push(mov.id);
       });
 
-      const activeShift =
-        nextDb.cashShifts.find((s) => s.status === 'open' && s.storeId === input.storeId) ??
-        nextDb.cashShifts.find((s) => s.status === 'open');
+      const activeShift = nextDb.cashShifts.find(
+        (s) => s.status === 'open' && s.storeId === input.storeId
+      );
       const cashPaid = payments.filter((p) => p.method === 'cash').reduce((s, p) => s + p.amount, 0);
       const cardPaid = payments
         .filter((p) => ['card', 'uzcard', 'humo', 'visa', 'mastercard', 'unionpay'].includes(p.method))
@@ -2519,31 +2565,35 @@ export const useAppStore = create<AppState>((set, get) => {
       };
 
       nextDb.sales.unshift(sale);
-      await syncOrEnqueue(nextDb, {
-        id: uid('sync'),
-        type: 'sale',
-        payload: {
-          saleId,
-          receiptNumber,
-          movementIds,
-          loyaltyTxIds,
-          debtId,
-          accountIds: touchedAccountIds,
-          accountDeltas,
-          customerSpentDelta: customer ? totalAmount : 0,
-          customerOrdersDelta: customer ? 1 : 0,
-          customerDebtDelta: customer ? debtAmount : 0,
-          loyaltyPointsDelta,
-          promoUsedDelta,
-          shiftDeltas: activeShift
-            ? { cashSales: cashPaid, cardSales: cardPaid, otherSales: otherPaid, expectedCash: cashPaid }
-            : undefined,
-          auditId,
-          storeId: input.storeId,
+      await syncOrEnqueue(
+        nextDb,
+        {
+          id: uid('sync'),
+          type: 'sale',
+          payload: {
+            saleId,
+            receiptNumber,
+            movementIds,
+            loyaltyTxIds,
+            debtId,
+            accountIds: touchedAccountIds,
+            accountDeltas,
+            customerSpentDelta: customer ? totalAmount : 0,
+            customerOrdersDelta: customer ? 1 : 0,
+            customerDebtDelta: customer ? debtAmount : 0,
+            loyaltyPointsDelta,
+            promoUsedDelta,
+            shiftDeltas: activeShift
+              ? { cashSales: cashPaid, cardSales: cardPaid, otherSales: otherPaid, expectedCash: cashPaid }
+              : undefined,
+            auditId,
+            storeId: input.storeId,
+          },
+          createdAt: nowIso,
+          attempts: 0,
         },
-        createdAt: nowIso,
-        attempts: 0,
-      });
+        { strict: true }
+      );
       return sale;
     },
 
@@ -2641,9 +2691,9 @@ export const useAppStore = create<AppState>((set, get) => {
       let accountDelta = 0;
 
       if (input.refundMethod === 'cash') {
-        const shift =
-          nextDb.cashShifts.find((s) => s.status === 'open' && s.storeId === sale.storeId) ??
-          nextDb.cashShifts.find((s) => s.status === 'open');
+        const shift = nextDb.cashShifts.find(
+          (s) => s.status === 'open' && s.storeId === sale.storeId
+        );
         if (shift) {
           shift.cashRefundsTotal += totalRefund;
           shift.expectedCash -= totalRefund;
@@ -2706,23 +2756,27 @@ export const useAppStore = create<AppState>((set, get) => {
         `Qaytarish ${retNum}: Chek ${sale.receiptNumber}, summa ${totalRefund}`,
         sale.storeId
       );
-      await syncOrEnqueue(nextDb, {
-        id: uid('sync'),
-        type: 'return',
-        payload: {
-          returnId: retId,
-          saleId: sale.id,
-          movementIds,
-          shiftId: touchedShiftId,
-          shiftCashRefundDelta,
-          accountId: touchedAccountId,
-          accountDelta,
-          auditId,
-          storeId: sale.storeId,
+      await syncOrEnqueue(
+        nextDb,
+        {
+          id: uid('sync'),
+          type: 'return',
+          payload: {
+            returnId: retId,
+            saleId: sale.id,
+            movementIds,
+            shiftId: touchedShiftId,
+            shiftCashRefundDelta,
+            accountId: touchedAccountId,
+            accountDelta,
+            auditId,
+            storeId: sale.storeId,
+          },
+          createdAt: nowIso,
+          attempts: 0,
         },
-        createdAt: nowIso,
-        attempts: 0,
-      });
+        { strict: true }
+      );
       return ret;
     },
 
@@ -2756,8 +2810,11 @@ export const useAppStore = create<AppState>((set, get) => {
               if (s) s.syncedAt = nowIso;
             }
           } catch (err) {
-            if (isPermissionError(err)) {
-              // Drop operations rejected by rules so queue doesn't spin forever
+            if (isPermissionError(err) || err instanceof BusinessRuleError) {
+              if (err instanceof BusinessRuleError) {
+                get().notify(err.message, 'error');
+              }
+              // Drop rejected/invalid operations so queue never loops infinitely
               continue;
             }
             lastErr = err;
@@ -3420,7 +3477,7 @@ export const useAppStore = create<AppState>((set, get) => {
     },
 
     upsertEmployee: async (emp, userUpdates, options) => {
-      const { db } = get();
+      const { db, isOnline } = get();
       if (!db || !get().can('manage_employees')) return;
       const currentUser = get().getCurrentUser();
       const nextDb: DatabaseSnapshot = structuredClone(db);
@@ -3431,6 +3488,8 @@ export const useAppStore = create<AppState>((set, get) => {
       const existingUser = uIdx >= 0 ? nextDb.users[uIdx] : undefined;
       const previousGoogleEmail =
         (existingEmp?.googleEmail || existingUser?.googleEmail || '').trim().toLowerCase() || undefined;
+      const previousPhone = (existingEmp?.phone || existingUser?.phone || '').trim() || undefined;
+      const prevSecretForAuth = (existingUser?.password || existingUser?.pin || '').trim();
 
       const cleanEmail = emp.googleEmail?.trim().toLowerCase() || userUpdates?.googleEmail?.trim().toLowerCase() || undefined;
       const empToSave: Employee = {
@@ -3441,6 +3500,7 @@ export const useAppStore = create<AppState>((set, get) => {
       if (idx >= 0) nextDb.employees[idx] = empToSave;
       else nextDb.employees.unshift(empToSave);
 
+      let targetSecretForAuth = '';
       if (uIdx >= 0 && existingUser) {
         const nextPassword = userUpdates?.password?.trim()
           ? userUpdates.password.trim()
@@ -3454,6 +3514,7 @@ export const useAppStore = create<AppState>((set, get) => {
         const nextPinHash = userUpdates?.pin?.trim()
           ? hashStaffSecret(userUpdates.pin.trim())
           : existingUser.pinHash || (nextPin ? hashStaffSecret(nextPin) : undefined);
+        targetSecretForAuth = (nextPassword || nextPin || '').trim();
         const updatedUser: User = {
           ...existingUser,
           name: emp.name,
@@ -3479,6 +3540,7 @@ export const useAppStore = create<AppState>((set, get) => {
       } else {
         const initPassword = userUpdates?.password?.trim() || '';
         const initPin = userUpdates?.pin?.trim() || String(Math.floor(1000 + Math.random() * 8999));
+        targetSecretForAuth = (initPassword || initPin).trim();
         const newUser: User = {
           id: emp.userId,
           name: emp.name,
@@ -3504,6 +3566,19 @@ export const useAppStore = create<AppState>((set, get) => {
         nextDb.users.push(newUser);
       }
 
+      if (isOnline && emp.phone && targetSecretForAuth) {
+        const authEmail = phoneToInternalEmail(emp.phone);
+        if (authEmail) {
+          void provisionStaffAccountOnSecondaryApp(
+            authEmail,
+            deriveFirebaseAuthPassword(emp.phone, targetSecretForAuth),
+            prevSecretForAuth
+              ? deriveFirebaseAuthPassword(previousPhone || emp.phone, prevSecretForAuth)
+              : undefined
+          );
+        }
+      }
+
       await syncOrEnqueue(nextDb, {
         id: uid('sync'),
         type: 'employee',
@@ -3512,6 +3587,7 @@ export const useAppStore = create<AppState>((set, get) => {
           userId: emp.userId,
           storeId: emp.storeId,
           ...(previousGoogleEmail ? { previousGoogleEmail } : {}),
+          ...(previousPhone && previousPhone !== emp.phone ? { previousPhone } : {}),
         },
         createdAt: nowIso,
         attempts: 0,
@@ -3533,6 +3609,7 @@ export const useAppStore = create<AppState>((set, get) => {
       const linkedUser = db.users.find((u) => u.id === emp.userId);
       const deletedGoogleEmail =
         (emp.googleEmail || linkedUser?.googleEmail || '').trim().toLowerCase() || undefined;
+      const deletedPhone = (emp.phone || linkedUser?.phone || '').trim() || undefined;
       const nextDb: DatabaseSnapshot = structuredClone(db);
       const deletedTargetIds = nextDb.targets
         .filter((tg) => tg.employeeId === empId)
@@ -3549,6 +3626,7 @@ export const useAppStore = create<AppState>((set, get) => {
           deletedTargetIds,
           storeId: emp.storeId,
           ...(deletedGoogleEmail ? { deletedGoogleEmail } : {}),
+          ...(deletedPhone ? { deletedPhone } : {}),
         },
         createdAt: new Date().toISOString(),
         attempts: 0,
@@ -3557,11 +3635,12 @@ export const useAppStore = create<AppState>((set, get) => {
     },
 
     updateUserCredentials: async (userId, input) => {
-      const { db } = get();
+      const { db, isOnline } = get();
       if (!db) return { ok: false, error: 'DB not loaded' };
       const nextDb: DatabaseSnapshot = structuredClone(db);
       const user = nextDb.users.find((u) => u.id === userId);
       if (!user) return { ok: false, error: 'Foydalanuvchi topilmadi' };
+      const prevSecret = (user.password || user.pin || '').trim();
 
       if (
         input.currentPassword !== undefined &&
@@ -3600,6 +3679,17 @@ export const useAppStore = create<AppState>((set, get) => {
         user.name = input.name.trim();
         const emp = nextDb.employees.find((e) => e.userId === userId);
         if (emp) emp.name = user.name;
+      }
+      const nextSecret = (user.password || user.pin || '').trim();
+      if (isOnline && user.phone && nextSecret && nextSecret !== prevSecret) {
+        const authEmail = phoneToInternalEmail(user.phone);
+        if (authEmail) {
+          void provisionStaffAccountOnSecondaryApp(
+            authEmail,
+            deriveFirebaseAuthPassword(user.phone, nextSecret),
+            prevSecret ? deriveFirebaseAuthPassword(user.phone, prevSecret) : undefined
+          );
+        }
       }
       const nowIso = new Date().toISOString();
       user.updatedAt = nowIso;
@@ -4167,7 +4257,7 @@ export const useAppStore = create<AppState>((set, get) => {
         const res = await migrateLocalAdditionsToWorkspace(workspaceContext, imported, {
           includeSeedLike: true,
         });
-        await get().forceSyncNow();
+        await get().syncOfflineQueue();
         return {
           uploadedCount: res.uploadedCount,
           skippedDuplicates: res.skippedDuplicates,
@@ -4190,7 +4280,7 @@ export const useAppStore = create<AppState>((set, get) => {
           ok: false,
           uploadedCount: 0,
           skippedDuplicates: 0,
-          error: "Bulutga sinxronlash uchun avval Google orqali kiring",
+          error: "Bulutga sinxronlash uchun internet aloqasini tekshiring va tizimga qayta kiring",
         };
       }
       if (!workspaceContext.isWsAdmin) {
@@ -4205,7 +4295,7 @@ export const useAppStore = create<AppState>((set, get) => {
         const res = await migrateLocalAdditionsToWorkspace(workspaceContext, db, {
           includeSeedLike: true,
         });
-        await get().forceSyncNow();
+        await get().syncOfflineQueue();
         return {
           ok: true,
           uploadedCount: res.uploadedCount,

@@ -317,13 +317,14 @@ export const POSPage: React.FC = () => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const usbBufferRef = useRef('');
   const usbLastTimeRef = useRef(0);
+  const barcodeHandlerRef = useRef<(code: string) => void>(() => {});
 
   useEffect(() => {
     const timer = setTimeout(() => setSearch(rawSearch.trim().toLowerCase()), 100);
     return () => clearTimeout(timer);
   }, [rawSearch]);
 
-  // USB / Bluetooth hardware barcode scanner global keydown buffer
+  // USB / Bluetooth hardware barcode scanner global keydown buffer (bind once)
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
@@ -346,7 +347,7 @@ export const POSPage: React.FC = () => {
           e.preventDefault();
           const code = usbBufferRef.current;
           usbBufferRef.current = '';
-          handleBarcodeScanned(code);
+          barcodeHandlerRef.current(code);
         } else {
           usbBufferRef.current = '';
         }
@@ -356,7 +357,7 @@ export const POSPage: React.FC = () => {
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  });
+  }, []);
 
   // Camera BarcodeDetector loop
   useEffect(() => {
@@ -404,6 +405,33 @@ export const POSPage: React.FC = () => {
     };
   }, [scannerOpen]);
 
+  const stockByVariant = useMemo(() => {
+    const map = new Map<string, number>();
+    if (!db) return map;
+    for (const s of db.stockItems) {
+      if (s.warehouseId === currentWarehouseId) {
+        map.set(s.variantId, (map.get(s.variantId) ?? 0) + s.qty);
+      }
+    }
+    return map;
+  }, [db, currentWarehouseId]);
+
+  const barcodeLookupMap = useMemo(() => {
+    const map = new Map<string, { product: Product; variant: Product['variants'][0] }>();
+    if (!db) return map;
+    for (const p of db.products) {
+      for (const v of p.variants) {
+        for (const b of v.barcodes) {
+          const k = b.trim().toLowerCase();
+          if (k && !map.has(k)) map.set(k, { product: p, variant: v });
+        }
+        const skuKey = v.sku.trim().toLowerCase();
+        if (skuKey && !map.has(skuKey)) map.set(skuKey, { product: p, variant: v });
+      }
+    }
+    return map;
+  }, [db]);
+
   const searchResults = useMemo(() => {
     if (!db || !search) return [];
     const list: { product: Product; variant: Product['variants'][0]; stock: number }[] = [];
@@ -416,18 +444,18 @@ export const POSPage: React.FC = () => {
           (v.color?.toLowerCase().includes(search) ?? false) ||
           (v.size?.toLowerCase().includes(search) ?? false);
         if (match) {
-          list.push({ product: p, variant: v, stock: getVariantStock(v.id, currentWarehouseId) });
+          list.push({ product: p, variant: v, stock: stockByVariant.get(v.id) ?? 0 });
         }
       });
     });
     return list.slice(0, 30);
-  }, [db, search, currentWarehouseId, getVariantStock]);
+  }, [db, search, stockByVariant]);
 
   if (!db) return null;
 
-  const activeShift =
-    db.cashShifts.find((s) => s.status === 'open' && s.storeId === currentStoreId) ??
-    db.cashShifts.find((s) => s.status === 'open');
+  const activeShift = db.cashShifts.find(
+    (s) => s.status === 'open' && s.storeId === currentStoreId
+  );
 
   const deferredSales = db.sales.filter((s) => s.status === 'deferred');
 
@@ -460,10 +488,10 @@ export const POSPage: React.FC = () => {
 
   const hasOverStockError =
     !db.settings.allowNegativeStock &&
-    cartItems.some((it) => it.qty > getVariantStock(it.variantId, currentWarehouseId));
+    cartItems.some((it) => it.qty > (stockByVariant.get(it.variantId) ?? getVariantStock(it.variantId, currentWarehouseId)));
 
   const addVariantToCart = (product: Product, variant: Product['variants'][0]) => {
-    const stock = getVariantStock(variant.id, currentWarehouseId);
+    const stock = stockByVariant.get(variant.id) ?? getVariantStock(variant.id, currentWarehouseId);
     const existing = cartItems.find((i) => i.variantId === variant.id);
     const nextQty = (existing?.qty ?? 0) + 1;
     if (!db.settings.allowNegativeStock && nextQty > stock) {
@@ -506,14 +534,11 @@ export const POSPage: React.FC = () => {
   const handleBarcodeScanned = (code: string) => {
     const clean = code.trim();
     if (!clean) return;
-    for (const p of db.products) {
-      for (const v of p.variants) {
-        if (v.barcodes.includes(clean) || v.sku.toLowerCase() === clean.toLowerCase()) {
-          addVariantToCart(p, v);
-          setRawSearch('');
-          return;
-        }
-      }
+    const hit = barcodeLookupMap.get(clean.toLowerCase());
+    if (hit) {
+      addVariantToCart(hit.product, hit.variant);
+      setRawSearch('');
+      return;
     }
     // Unknown barcode -> quick create right inside Savatcha
     setQuickCreateBarcode(clean);
@@ -521,51 +546,59 @@ export const POSPage: React.FC = () => {
     setQuickProdPrice(120000);
     setQuickProdQty(10);
   };
+  barcodeHandlerRef.current = handleBarcodeScanned;
 
   const handleQuickCreateAndAdd = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!quickCreateBarcode || !quickProdName.trim()) return;
-    const nowIso = new Date().toISOString();
-    const pId = uid('prod');
-    const vId = uid('var');
-    const product: Product = {
-      id: pId,
-      name: quickProdName.trim(),
-      categoryId: db.categories[0]?.id ?? 'cat-shirts',
-      unit: 'dona',
-      tags: ['Tez yaratilgan'],
-      isPublishedOnline: false,
-      variants: [
-        {
-          id: vId,
-          productId: pId,
-          sku: `SBO-${quickCreateBarcode.slice(-5)}`,
-          size: 'Standart',
-          purchasePrice: Math.round(quickProdPrice * 0.65),
-          retailPrice: quickProdPrice,
-          wholesalePrice: Math.round(quickProdPrice * 0.85),
-          minStock: 2,
-          barcodes: [quickCreateBarcode],
-          storeId: currentStoreId,
-          createdAt: nowIso,
-          updatedAt: nowIso,
-          createdBy: 'usr-cashier',
-        },
-      ],
-      storeId: currentStoreId,
-      createdAt: nowIso,
-      updatedAt: nowIso,
-      createdBy: 'usr-cashier',
-    };
-    const res = await upsertProduct(product);
-    if (!res.ok) {
-      notify(res.error || 'Bu mahsulot allaqachon mavjud', 'error');
-      return;
+    if (isSubmitting || !quickCreateBarcode || !quickProdName.trim()) return;
+    setIsSubmitting(true);
+    try {
+      const nowIso = new Date().toISOString();
+      const pId = uid('prod');
+      const vId = uid('var');
+      const product: Product = {
+        id: pId,
+        name: quickProdName.trim(),
+        categoryId: db.categories[0]?.id ?? 'cat-shirts',
+        unit: 'dona',
+        tags: ['Tez yaratilgan'],
+        isPublishedOnline: false,
+        variants: [
+          {
+            id: vId,
+            productId: pId,
+            sku: `SBO-${quickCreateBarcode.slice(-5)}`,
+            size: 'Standart',
+            purchasePrice: Math.round(quickProdPrice * 0.65),
+            retailPrice: quickProdPrice,
+            wholesalePrice: Math.round(quickProdPrice * 0.85),
+            minStock: 2,
+            barcodes: [quickCreateBarcode],
+            storeId: currentStoreId,
+            createdAt: nowIso,
+            updatedAt: nowIso,
+            createdBy: 'usr-cashier',
+          },
+        ],
+        storeId: currentStoreId,
+        createdAt: nowIso,
+        updatedAt: nowIso,
+        createdBy: 'usr-cashier',
+      };
+      const res = await upsertProduct(product);
+      if (!res.ok) {
+        notify(res.error || 'Bu mahsulot allaqachon mavjud', 'error');
+        return;
+      }
+      await quickAddStock(pId, vId, currentWarehouseId, Math.max(1, quickProdQty), 'Savatcha tezkor yaratish');
+      addVariantToCart(product, product.variants[0]);
+      setQuickCreateBarcode(null);
+      setRawSearch('');
+    } catch (err) {
+      notify(err instanceof Error ? err.message : 'Mahsulot yaratishda xatolik', 'error');
+    } finally {
+      setIsSubmitting(false);
     }
-    await quickAddStock(pId, vId, currentWarehouseId, Math.max(1, quickProdQty), 'Savatcha tezkor yaratish');
-    addVariantToCart(product, product.variants[0]);
-    setQuickCreateBarcode(null);
-    setRawSearch('');
   };
 
   const updateItemQty = (itemId: string, nextQty: number) => {
@@ -575,7 +608,7 @@ export const POSPage: React.FC = () => {
     }
     const target = cartItems.find((it) => it.id === itemId);
     if (!target) return;
-    const stock = getVariantStock(target.variantId, currentWarehouseId);
+    const stock = stockByVariant.get(target.variantId) ?? getVariantStock(target.variantId, currentWarehouseId);
     if (nextQty > target.qty && !db.settings.allowNegativeStock && nextQty > stock) {
       notify(`Omborda faqat ${stock} dona mavjud`, 'error');
       return;
@@ -631,6 +664,8 @@ export const POSPage: React.FC = () => {
       });
       clearCart();
       navigate(`/transactions/${tx.id}?tab=payment`);
+    } catch (err) {
+      notify(err instanceof Error ? err.message : "Chek yaratishda xatolik yuz berdi", 'error');
     } finally {
       setIsSubmitting(false);
     }
@@ -810,7 +845,7 @@ export const POSPage: React.FC = () => {
               <SwipeCartRow
                 key={it.id}
                 item={it}
-                availableStock={getVariantStock(it.variantId, currentWarehouseId)}
+                availableStock={stockByVariant.get(it.variantId) ?? getVariantStock(it.variantId, currentWarehouseId)}
                 allowNegative={db.settings.allowNegativeStock}
                 onQtyChange={(nextQty) => updateItemQty(it.id, nextQty)}
                 onDiscountChange={(pct) => updateItemDiscount(it.id, pct)}
@@ -1098,7 +1133,8 @@ export const POSPage: React.FC = () => {
               </div>
               <button
                 type="submit"
-                className="w-full h-11 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-sm font-bold"
+                disabled={isSubmitting}
+                className="w-full h-11 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-bold"
               >
                 {t.pos.createAndAdd}
               </button>
@@ -1139,29 +1175,36 @@ export const POSPage: React.FC = () => {
               <form
                 onSubmit={async (e) => {
                   e.preventDefault();
-                  if (!newCustName.trim()) return;
-                  const nowIso = new Date().toISOString();
-                  const created = await upsertCustomer({
-                    id: uid('cust'),
-                    name: newCustName.trim(),
-                    phone: newCustPhone.trim(),
-                    tags: [],
-                    segment: 'new',
-                    totalSpent: 0,
-                    ordersCount: 0,
-                    debtBalance: 0,
-                    storeId: currentStoreId,
-                    createdAt: nowIso,
-                    updatedAt: nowIso,
-                    createdBy: 'usr-cashier',
-                  });
-                  setCartCustomerId(created.id);
-                  setCartLoyaltySpent(0);
-                  setNewCustName('');
-                  setNewCustPhone('+99890');
-                  setNewCustomerOpen(false);
-                  setCustomerModalOpen(false);
-                  notify(`Mijoz "${created.name}" qo'shildi`, 'success');
+                  if (isSubmitting || !newCustName.trim()) return;
+                  setIsSubmitting(true);
+                  try {
+                    const nowIso = new Date().toISOString();
+                    const created = await upsertCustomer({
+                      id: uid('cust'),
+                      name: newCustName.trim(),
+                      phone: newCustPhone.trim(),
+                      tags: [],
+                      segment: 'new',
+                      totalSpent: 0,
+                      ordersCount: 0,
+                      debtBalance: 0,
+                      storeId: currentStoreId,
+                      createdAt: nowIso,
+                      updatedAt: nowIso,
+                      createdBy: 'usr-cashier',
+                    });
+                    setCartCustomerId(created.id);
+                    setCartLoyaltySpent(0);
+                    setNewCustName('');
+                    setNewCustPhone('+99890');
+                    setNewCustomerOpen(false);
+                    setCustomerModalOpen(false);
+                    notify(`Mijoz "${created.name}" qo'shildi`, 'success');
+                  } catch (err) {
+                    notify(err instanceof Error ? err.message : "Mijoz qo'shishda xatolik", 'error');
+                  } finally {
+                    setIsSubmitting(false);
+                  }
                 }}
                 className="p-3 rounded-xl border border-blue-200 dark:border-blue-800 bg-blue-50/50 dark:bg-blue-950/20 space-y-2 text-xs"
               >
@@ -1473,6 +1516,8 @@ export const POSPage: React.FC = () => {
                     try {
                       await openShift(Math.max(0, startingCash), currentStoreId);
                       notify('Kassa smenasi ochildi', 'success');
+                    } catch (err) {
+                      notify(err instanceof Error ? err.message : 'Smena ochishda xatolik', 'error');
                     } finally {
                       setIsSubmitting(false);
                     }
@@ -1543,6 +1588,8 @@ export const POSPage: React.FC = () => {
                         try {
                           await recordCashOp(activeShift.id, cashOpType, cashOpAmount, cashOpReason);
                           notify('Kassa amaliyoti saqlandi', 'success');
+                        } catch (err) {
+                          notify(err instanceof Error ? err.message : 'Kassa amaliyotida xatolik', 'error');
                         } finally {
                           setIsSubmitting(false);
                         }
@@ -1574,6 +1621,8 @@ export const POSPage: React.FC = () => {
                           await closeShift(activeShift.id, actualClosingCash || activeShift.expectedCash);
                           setShiftModalOpen(false);
                           notify('Smena yopildi va Z-hisobot saqlandi', 'success');
+                        } catch (err) {
+                          notify(err instanceof Error ? err.message : 'Smena yopishda xatolik', 'error');
                         } finally {
                           setIsSubmitting(false);
                         }
@@ -1743,6 +1792,8 @@ export const POSPage: React.FC = () => {
                         setReturnsModalOpen(false);
                         setSelectedSaleForReturn(null);
                         notify("Qaytarish rasmiylashtirildi va qoldiq omborga qaytdi", 'success');
+                      } catch (err) {
+                        notify(err instanceof Error ? err.message : 'Qaytarishda xatolik yuz berdi', 'error');
                       } finally {
                         setIsSubmitting(false);
                       }
