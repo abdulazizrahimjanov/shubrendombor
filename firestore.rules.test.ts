@@ -12,8 +12,9 @@ import {
 
 /**
  * Phase 0 + Phase 2 Security Specification Test Suite
- * Verifies workspace RBAC, strict branch isolation (`store-chilonzor` vs `store-samdarvoza`),
- * owner (`ISLOMBEK`) multi-branch access, and `staffCredentials` plaintext rejection / safe migration
+ * Verifies workspace RBAC, workspace-wide operational data exchange (`store-chilonzor` & `store-samdarvoza`),
+ * universal active-staff POS selling rights, owner (`ISLOMBEK`) access,
+ * outsider/unverified denial, and `staffCredentials` plaintext rejection / safe migration
  * against Firebase Rules Emulator (`@firebase/rules-unit-testing`).
  */
 export const DIRTY_DOZEN_PAYLOADS = [
@@ -155,16 +156,16 @@ export const DIRTY_DOZEN_PAYLOADS = [
   },
   {
     id: 12,
-    name: 'Branch isolation bypass by cashier on unassigned store',
-    auth: { uid: 'uid-cashier', token: { email: 'cashier@gmail.com', email_verified: true } },
+    name: 'Outsider non-member sale creation denied',
+    auth: { uid: 'uid-outsider', token: { email: 'outsider@gmail.com', email_verified: true } },
     operation: 'create',
     path: '/workspaces/ws-shubrend-main/sales/sale-illegal',
     data: {
       id: 'sale-illegal',
       receiptNumber: '#020101049999',
       warehouseId: 'wh-samdarvoza',
-      cashierId: 'usr-cashier',
-      cashierName: 'Kassir',
+      cashierId: 'uid-outsider',
+      cashierName: 'Outsider',
       items: [],
       subtotal: 0,
       checkDiscountAmount: 0,
@@ -181,8 +182,8 @@ export const DIRTY_DOZEN_PAYLOADS = [
       fiscalStatus: 'not_configured',
       storeId: 'store-samdarvoza',
       ownerUid: 'uid-owner',
-      memberUids: ['uid-owner', 'uid-cashier'],
-      createdBy: 'usr-cashier',
+      memberUids: ['uid-owner', 'uid-outsider'],
+      createdBy: 'uid-outsider',
     },
     expected: 'PERMISSION_DENIED',
   },
@@ -517,62 +518,39 @@ export async function runEmulatorSecurityTests(): Promise<{ passed: number; fail
       await assertFails(outsiderDb.doc(`workspaces/${WS_ID}/staffCredentials/emp-legacy`).get());
     });
 
-    // 2. Branch Isolation: SHU BREND TORAQORGON employee cannot access SHU BREND MINGBULOQ
-    await check('Toraqorgon cashier can get own branch docs across operational collections', async () => {
+    // 2. Workspace-Wide Data Exchange & Universal Selling across all active employees
+    await check('Toraqorgon cashier can read shared workspace operational docs across branches', async () => {
       await assertSucceeds(torDb.doc(`workspaces/${WS_ID}/products/prod-tor`).get());
+      await assertSucceeds(torDb.doc(`workspaces/${WS_ID}/products/prod-min`).get());
       await assertSucceeds(torDb.doc(`workspaces/${WS_ID}/sales/sale-tor`).get());
+      await assertSucceeds(torDb.doc(`workspaces/${WS_ID}/sales/sale-min`).get());
       await assertSucceeds(torDb.doc(`workspaces/${WS_ID}/stockItems/stock-tor`).get());
+      await assertSucceeds(torDb.doc(`workspaces/${WS_ID}/stockItems/stock-min`).get());
       await assertSucceeds(torDb.doc(`workspaces/${WS_ID}/cashShifts/shift-tor`).get());
+      await assertSucceeds(torDb.doc(`workspaces/${WS_ID}/cashShifts/shift-min`).get());
       await assertSucceeds(torDb.doc(`workspaces/${WS_ID}/accounts/acc-tor`).get());
+      await assertSucceeds(torDb.doc(`workspaces/${WS_ID}/accounts/acc-min`).get());
       await assertSucceeds(torDb.doc(`workspaces/${WS_ID}/transactions/trx-tor`).get());
+      await assertSucceeds(torDb.doc(`workspaces/${WS_ID}/transactions/trx-min`).get());
       await assertSucceeds(torDb.doc(`workspaces/${WS_ID}/customers/cust-tor`).get());
+      await assertSucceeds(torDb.doc(`workspaces/${WS_ID}/customers/cust-min`).get());
       await assertSucceeds(torDb.doc(`workspaces/${WS_ID}/debts/debt-tor`).get());
+      await assertSucceeds(torDb.doc(`workspaces/${WS_ID}/debts/debt-min`).get());
       await assertSucceeds(torDb.doc(`workspaces/${WS_ID}/onlineOrders/ord-tor`).get());
+      await assertSucceeds(torDb.doc(`workspaces/${WS_ID}/onlineOrders/ord-min`).get());
     });
 
-    await check('Toraqorgon cashier can run store-scoped list queries for own branch', async () => {
+    await check('Active staff can list all workspace operational collections for real-time exchange', async () => {
       for (const col of ['products', 'sales', 'customers', 'debts', 'stockItems', 'cashShifts', 'accounts', 'transactions', 'onlineOrders']) {
-        await assertSucceeds(
-          torDb
-            .collection(`workspaces/${WS_ID}/${col}`)
-            .where('memberUids', 'array-contains', TOR_UID)
-            .where('storeId', '==', STORE_TOR)
-            .get(),
-        );
+        await assertSucceeds(torDb.collection(`workspaces/${WS_ID}/${col}`).get());
+        await assertSucceeds(minDb.collection(`workspaces/${WS_ID}/${col}`).get());
       }
     });
 
-    await check('Toraqorgon cashier CANNOT get any Mingbuloq document', async () => {
-      await assertFails(torDb.doc(`workspaces/${WS_ID}/products/prod-min`).get());
-      await assertFails(torDb.doc(`workspaces/${WS_ID}/sales/sale-min`).get());
-      await assertFails(torDb.doc(`workspaces/${WS_ID}/stockItems/stock-min`).get());
-      await assertFails(torDb.doc(`workspaces/${WS_ID}/cashShifts/shift-min`).get());
-      await assertFails(torDb.doc(`workspaces/${WS_ID}/accounts/acc-min`).get());
-      await assertFails(torDb.doc(`workspaces/${WS_ID}/transactions/trx-min`).get());
-      await assertFails(torDb.doc(`workspaces/${WS_ID}/customers/cust-min`).get());
-      await assertFails(torDb.doc(`workspaces/${WS_ID}/debts/debt-min`).get());
-      await assertFails(torDb.doc(`workspaces/${WS_ID}/onlineOrders/ord-min`).get());
-    });
-
-    await check('Toraqorgon cashier CANNOT run unfiltered or cross-branch list queries', async () => {
-      for (const col of ['products', 'sales', 'customers', 'debts', 'accounts', 'transactions', 'onlineOrders']) {
-        await assertFails(
-          torDb.collection(`workspaces/${WS_ID}/${col}`).where('memberUids', 'array-contains', TOR_UID).get(),
-        );
-        await assertFails(
-          torDb
-            .collection(`workspaces/${WS_ID}/${col}`)
-            .where('memberUids', 'array-contains', TOR_UID)
-            .where('storeId', '==', STORE_MIN)
-            .get(),
-        );
-      }
-    });
-
-    await check('Toraqorgon cashier CANNOT write into Mingbuloq branch or escalate own role', async () => {
-      await assertFails(
-        torDb.doc(`workspaces/${WS_ID}/sales/sale-illegal`).set({
-          id: 'sale-illegal',
+    await check('Active cashier CAN sell across shared workspace but CANNOT escalate own role', async () => {
+      await assertSucceeds(
+        torDb.doc(`workspaces/${WS_ID}/sales/sale-shared-pos`).set({
+          id: 'sale-shared-pos',
           receiptNumber: '#999',
           warehouseId: 'wh-samdarvoza',
           cashierId: TOR_UID,
@@ -605,24 +583,6 @@ export async function runEmulatorSecurityTests(): Promise<{ passed: number; fail
           assignedStoreIds: [STORE_TOR, STORE_MIN],
           updatedAt: ts,
         }),
-      );
-    });
-
-    // 3. Reverse isolation: Mingbuloq employee cannot access Toraqorgon
-    await check('Mingbuloq cashier CANNOT get or list Toraqorgon documents', async () => {
-      await assertSucceeds(minDb.doc(`workspaces/${WS_ID}/sales/sale-min`).get());
-      await assertFails(minDb.doc(`workspaces/${WS_ID}/products/prod-tor`).get());
-      await assertFails(minDb.doc(`workspaces/${WS_ID}/sales/sale-tor`).get());
-      await assertFails(minDb.doc(`workspaces/${WS_ID}/customers/cust-tor`).get());
-      await assertFails(minDb.doc(`workspaces/${WS_ID}/debts/debt-tor`).get());
-      await assertFails(minDb.doc(`workspaces/${WS_ID}/accounts/acc-tor`).get());
-      await assertFails(minDb.doc(`workspaces/${WS_ID}/transactions/trx-tor`).get());
-      await assertFails(
-        minDb
-          .collection(`workspaces/${WS_ID}/sales`)
-          .where('memberUids', 'array-contains', MIN_UID)
-          .where('storeId', '==', STORE_TOR)
-          .get(),
       );
     });
 

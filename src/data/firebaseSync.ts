@@ -73,6 +73,7 @@ export const ADMIN_BOOTSTRAPPED_EMAILS = [
   'assalomu408@gmail.com',
   'assdsh993@gmail.com',
   'a1sanjar73@gmail.com',
+  'a40921995@gmail.com',
   'staff.998889260404@shubrend.internal',
 ] as const;
 export const ADMIN_BOOTSTRAPPED_EMAIL = ADMIN_BOOTSTRAPPED_EMAILS[0];
@@ -1126,9 +1127,17 @@ export async function bootstrapOrJoinWorkspace(
         updatedAt: serverTimestamp(),
       });
     } else {
+      const pd = profSnap.data();
+      const existingWsIds = Array.isArray(pd?.workspaceIds)
+        ? pd.workspaceIds.map((w: unknown) => String(w)).filter(Boolean)
+        : [];
+      const nextWsIds = existingWsIds.includes(PRIMARY_WORKSPACE_ID)
+        ? existingWsIds.slice(0, 20)
+        : [PRIMARY_WORKSPACE_ID, ...existingWsIds].slice(0, 20);
       await updateDoc(profileRef, {
         displayName,
         activeWorkspaceId: PRIMARY_WORKSPACE_ID,
+        workspaceIds: nextWsIds,
         updatedAt: serverTimestamp(),
       });
     }
@@ -1355,6 +1364,19 @@ export async function bootstrapOrJoinWorkspace(
       roleId = (md.roleId as RoleId) || roleId;
       assignedStoreIds = Array.isArray(md.assignedStoreIds) ? md.assignedStoreIds : [];
       staffId = md.staffId ? String(md.staffId) : undefined;
+      if (
+        (isAdminMember || roleId === 'owner' || roleId === 'admin') &&
+        (!Array.isArray(md.permissions) || !md.permissions.includes('sell'))
+      ) {
+        try {
+          await updateDoc(memberRef, {
+            permissions: mapAppPermissionsToRuleTokens([], roleId),
+            updatedAt: serverTimestamp(),
+          });
+        } catch {
+          // non-fatal self-heal
+        }
+      }
     }
   } catch (err) {
     if (err instanceof Error && err.message.includes('faolsizlantirilgan')) throw err;
@@ -1857,8 +1879,10 @@ export async function migrateLocalAdditionsToWorkspace(
         b.set(doc(firestoreDb, wsPath, 'staffCredentials', staffId), serializeStaffCredential(userObj, emp, ctx))
       );
       uploadedCount += 1;
-      const cleanEmail = (emp.googleEmail || userObj.googleEmail || '').trim().toLowerCase();
-      if (cleanEmail) {
+      const phoneInviteEmail = phoneToInternalEmail(emp.phone || userObj.phone);
+      const legacyInviteEmail = (emp.googleEmail || userObj.googleEmail || '').trim().toLowerCase();
+      const candidateEmails = Array.from(new Set([phoneInviteEmail, legacyInviteEmail].filter(Boolean)));
+      for (const cleanEmail of candidateEmails) {
         const emailHash = await sha256Hex(cleanEmail);
         if (!existingInviteIds.has(emailHash)) {
           existingInviteIds.add(emailHash);
@@ -2412,26 +2436,38 @@ const WORKSPACE_WIDE_READ_COLS = new Set([
   'categories',
   'brands',
   'products',
+  'suppliers',
   'stockItems',
   'stockMovements',
+  'purchaseReceipts',
+  'purchaseOrders',
+  'transfers',
+  'writeOffs',
+  'stocktakes',
   'sales',
   'returns',
   'cashShifts',
   'cashOperations',
-  'suppliers',
   'accounts',
+  'transactions',
+  'expenses',
   'customers',
   'loyaltyAccounts',
+  'loyaltyTransactions',
   'debts',
   'promoCodes',
   'staffDirectory',
+  'targets',
+  'onlineOrders',
+  'auditLogs',
 ]);
 
 export function subscribeWorkspaceRealtime(
   ctx: WorkspaceContext,
   getBaseSnapshot: () => DatabaseSnapshot | null,
   onHydrate: (snapshot: DatabaseSnapshot, updatedMeta?: Partial<WorkspaceContext>) => void,
-  onFatalError: (err: Error) => void
+  onFatalError: (err: Error) => void,
+  onSyncWarning?: (err: Error) => void
 ): () => void {
   const bucket: SyncBucket = {};
   const rawMemberTracking: Record<string, { id: string; memberUids?: string[] }[]> = {};
@@ -2545,7 +2581,11 @@ export function subscribeWorkspaceRealtime(
               ? (dir.assignedStoreIds as string[])
               : [storeId],
             ...(Array.isArray(dir.customPermissions)
-              ? { customPermissions: dir.customPermissions as Permission[] }
+              ? {
+                  customPermissions: Array.from(
+                    new Set<Permission>([...(dir.customPermissions as Permission[]), 'use_pos'])
+                  ),
+                }
               : {}),
             isActive: Boolean(dir.isActive),
             ...(dir.avatarColor ? { avatarColor: String(dir.avatarColor) } : {}),
@@ -2619,7 +2659,14 @@ export function subscribeWorkspaceRealtime(
           memberUids: Array.isArray(d.memberUids) ? d.memberUids : ctx.memberUids,
           adminUids: Array.isArray(d.adminUids) ? d.adminUids : ctx.adminUids,
           invitedEmails: Array.isArray(d.invitedEmails) ? d.invitedEmails : ctx.invitedEmails,
-          roles: Array.isArray(d.roles) ? (d.roles as Role[]) : undefined,
+          roles: Array.isArray(d.roles)
+            ? (d.roles as Role[]).map((r) => ({
+                ...r,
+                permissions: Array.isArray(r.permissions)
+                  ? Array.from(new Set<Permission>([...r.permissions, 'use_pos']))
+                  : ['use_pos'],
+              }))
+            : undefined,
           settings: d.settings as AppSettings | undefined,
           version: typeof d.version === 'number' ? d.version : undefined,
         };
@@ -2674,7 +2721,7 @@ export function subscribeWorkspaceRealtime(
     )
   );
 
-  // Helper to attach subcollection listeners cleanly (respecting branch isolation rules without requiring composite indexes)
+  // Helper to attach subcollection listeners cleanly, with automatic store-scoped fallback if server rules lag behind
   const watchCol = <T extends object>(
     colName: string,
     assign: (items: T[]) => void,
@@ -2683,8 +2730,20 @@ export function subscribeWorkspaceRealtime(
     const colPath = `${wsPath}/${colName}`;
     const colRef = collection(firestoreDb, 'workspaces', ctx.workspaceId, colName);
     const isWorkspaceWide = WORKSPACE_WIDE_READ_COLS.has(colName);
+    const activeColUnsubs = new Set<() => void>();
+    let registeredCleanup = false;
+    const ensureCleanupRegistered = () => {
+      if (registeredCleanup) return;
+      registeredCleanup = true;
+      unsubs.push(() => {
+        activeColUnsubs.forEach((u) => u());
+        activeColUnsubs.clear();
+      });
+    };
 
-    const buildQueries = () => {
+    const allowedStores = Array.from(new Set(ctx.assignedStoreIds || [])).filter(Boolean).slice(0, 10);
+
+    const buildQueries = (forceStoreScoped = false) => {
       if (options?.adminOnly) {
         return [
           ctx.isPlatformAdmin || ctx.isWsAdmin
@@ -2692,23 +2751,14 @@ export function subscribeWorkspaceRealtime(
             : query(colRef, where('adminUids', 'array-contains', ctx.uid)),
         ];
       }
-      if (isWorkspaceWide) {
+      if (!forceStoreScoped && isWorkspaceWide) {
         return [colRef];
       }
-      if (ctx.isPlatformAdmin || ctx.isWsAdmin) {
+      if (!forceStoreScoped && (ctx.isPlatformAdmin || ctx.isWsAdmin)) {
         return [colRef];
       }
-      const allowedStores = Array.from(new Set(ctx.assignedStoreIds || [])).filter(Boolean).slice(0, 10);
       return allowedStores.map((sId) => query(colRef, where('storeId', '==', sId)));
     };
-
-    const queries = buildQueries();
-    if (queries.length === 0) {
-      rawMemberTracking[colName] = [];
-      assign([]);
-      scheduleFlush();
-      return;
-    }
 
     const docsByQueryIdx = new Map<number, Map<string, { item: T; memberUids?: string[] }>>();
     const emitMerged = () => {
@@ -2734,9 +2784,24 @@ export function subscribeWorkspaceRealtime(
       scheduleFlush();
     };
 
-    queries.forEach((q, qIdx) => {
-      unsubs.push(
-        onSnapshot(
+    const attachQueries = (queriesToAttach: ReturnType<typeof buildQueries>, isStoreFallback: boolean) => {
+      if (disposed) return;
+      activeColUnsubs.forEach((u) => u());
+      activeColUnsubs.clear();
+      docsByQueryIdx.clear();
+
+      if (queriesToAttach.length === 0) {
+        rawMemberTracking[colName] = [];
+        assign([]);
+        scheduleFlush();
+        return;
+      }
+
+      ensureCleanupRegistered();
+      let switchedToFallback = false;
+
+      queriesToAttach.forEach((q, qIdx) => {
+        const unsub = onSnapshot(
           q,
           (snap) => {
             const localMap = new Map<string, { item: T; memberUids?: string[] }>();
@@ -2751,15 +2816,51 @@ export function subscribeWorkspaceRealtime(
             emitMerged();
           },
           (err) => {
+            const errCode =
+              typeof err === 'object' && err !== null && 'code' in err
+                ? String((err as { code?: unknown }).code).toLowerCase()
+                : '';
+            const errMsg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+            const isPermErr =
+              errCode.includes('permission-denied') ||
+              errMsg.includes('permission') ||
+              errMsg.includes('insufficient');
+
+            if (
+              isPermErr &&
+              !isStoreFallback &&
+              !switchedToFallback &&
+              !options?.adminOnly &&
+              !ctx.isPlatformAdmin &&
+              !ctx.isWsAdmin &&
+              allowedStores.length > 0
+            ) {
+              switchedToFallback = true;
+              const fallbackQueries = buildQueries(true);
+              attachQueries(fallbackQueries, true);
+              return;
+            }
+
+            if (isPermErr) {
+              console.warn(`[firebaseSync] Non-fatal list permission warning on ${colPath}:`, err);
+              if (onSyncWarning) {
+                onSyncWarning(err instanceof Error ? err : new Error(String(err)));
+              }
+              return;
+            }
+
             try {
               handleFirestoreError(err, OperationType.LIST, colPath);
             } catch (wrapped) {
               onFatalError(wrapped as Error);
             }
           }
-        )
-      );
-    });
+        );
+        activeColUnsubs.add(unsub);
+      });
+    };
+
+    attachQueries(buildQueries(false), false);
   };
 
   watchCol<Store>('stores', (items) => {

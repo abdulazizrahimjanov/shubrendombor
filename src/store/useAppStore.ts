@@ -1003,6 +1003,11 @@ export const useAppStore = create<AppState>((set, get) => {
               cloudError: formatFirebaseError(fatalErr, get().language),
               syncStatus: 'offline',
             });
+          },
+          (warnErr) => {
+            set({
+              cloudError: formatFirebaseError(warnErr, get().language),
+            });
           }
         );
 
@@ -1220,6 +1225,18 @@ export const useAppStore = create<AppState>((set, get) => {
         db.version = 5;
         changed = true;
       }
+      db.roles.forEach((role) => {
+        if (!role.permissions.includes('use_pos')) {
+          role.permissions = [...role.permissions, 'use_pos'];
+          changed = true;
+        }
+      });
+      db.users.forEach((u) => {
+        if (Array.isArray(u.customPermissions) && !u.customPermissions.includes('use_pos')) {
+          u.customPermissions = [...u.customPermissions, 'use_pos'];
+          changed = true;
+        }
+      });
       if (changed) {
         await repository.save(db);
       }
@@ -1438,11 +1455,15 @@ export const useAppStore = create<AppState>((set, get) => {
 
       localStorage.setItem(SESSION_KEY, localMatch.id);
       const currentFb = auth.currentUser;
+      const currentFbEmail = currentFb?.email?.trim().toLowerCase() || '';
+      if (currentFb && currentFbEmail !== internalEmail) {
+        await signOutFirebase();
+      }
       set({
         currentUserId: localMatch.id,
         activeStoreId: resolveDefaultStoreForUser(localMatch, db),
       });
-      if (currentFb && !get().cloudConnected && !get().cloudConnecting) {
+      if (currentFb && currentFbEmail === internalEmail && !get().cloudConnected && !get().cloudConnecting) {
         void connectFirebaseUser(currentFb, { setSessionIfMissing: false });
       }
       return true;
@@ -3508,7 +3529,9 @@ export const useAppStore = create<AppState>((set, get) => {
       const previousGoogleEmail =
         (existingEmp?.googleEmail || existingUser?.googleEmail || '').trim().toLowerCase() || undefined;
       const previousPhone = (existingEmp?.phone || existingUser?.phone || '').trim() || undefined;
-      const prevSecretForAuth = (existingUser?.password || existingUser?.pin || '').trim();
+      const prevSecretCandidates = Array.from(
+        new Set([existingUser?.password, existingUser?.pin].map((s) => (s || '').trim()).filter(Boolean))
+      );
 
       const cleanEmail = emp.googleEmail?.trim().toLowerCase() || userUpdates?.googleEmail?.trim().toLowerCase() || undefined;
       const empToSave: Employee = {
@@ -3534,12 +3557,18 @@ export const useAppStore = create<AppState>((set, get) => {
           ? hashStaffSecret(userUpdates.pin.trim())
           : existingUser.pinHash || (nextPin ? hashStaffSecret(nextPin) : undefined);
         targetSecretForAuth = (nextPassword || nextPin || '').trim();
+        const normalizedCustomPerms = userUpdates?.customPermissions
+          ? Array.from(new Set<Permission>([...userUpdates.customPermissions, 'use_pos']))
+          : existingUser.customPermissions
+          ? Array.from(new Set<Permission>([...existingUser.customPermissions, 'use_pos']))
+          : undefined;
         const updatedUser: User = {
           ...existingUser,
           name: emp.name,
           phone: emp.phone,
           roleId: emp.roleId,
           ...userUpdates,
+          ...(normalizedCustomPerms ? { customPermissions: normalizedCustomPerms } : {}),
           password: nextPassword,
           pin: nextPin,
           ...(nextPasswordHash ? { passwordHash: nextPasswordHash } : {}),
@@ -3588,13 +3617,17 @@ export const useAppStore = create<AppState>((set, get) => {
       if (isOnline && emp.phone && targetSecretForAuth) {
         const authEmail = phoneToInternalEmail(emp.phone);
         if (authEmail) {
-          void provisionStaffAccountOnSecondaryApp(
+          const prevPasswords = prevSecretCandidates.map((s) =>
+            deriveFirebaseAuthPassword(previousPhone || emp.phone, s)
+          );
+          const provRes = await provisionStaffAccountOnSecondaryApp(
             authEmail,
             deriveFirebaseAuthPassword(emp.phone, targetSecretForAuth),
-            prevSecretForAuth
-              ? deriveFirebaseAuthPassword(previousPhone || emp.phone, prevSecretForAuth)
-              : undefined
+            prevPasswords
           );
+          if (!provRes.ok && provRes.code === 'auth/operation-not-allowed' && provRes.error) {
+            get().notify(provRes.error, 'error');
+          }
         }
       }
 
@@ -3660,6 +3693,9 @@ export const useAppStore = create<AppState>((set, get) => {
       const user = nextDb.users.find((u) => u.id === userId);
       if (!user) return { ok: false, error: 'Foydalanuvchi topilmadi' };
       const prevSecret = (user.password || user.pin || '').trim();
+      const prevSecretCandidates = Array.from(
+        new Set([user.password, user.pin].map((s) => (s || '').trim()).filter(Boolean))
+      );
 
       if (
         input.currentPassword !== undefined &&
@@ -3703,10 +3739,13 @@ export const useAppStore = create<AppState>((set, get) => {
       if (isOnline && user.phone && nextSecret && nextSecret !== prevSecret) {
         const authEmail = phoneToInternalEmail(user.phone);
         if (authEmail) {
-          void provisionStaffAccountOnSecondaryApp(
+          const prevPasswords = prevSecretCandidates.map((s) =>
+            deriveFirebaseAuthPassword(user.phone, s)
+          );
+          await provisionStaffAccountOnSecondaryApp(
             authEmail,
             deriveFirebaseAuthPassword(user.phone, nextSecret),
-            prevSecret ? deriveFirebaseAuthPassword(user.phone, prevSecret) : undefined
+            prevPasswords
           );
         }
       }

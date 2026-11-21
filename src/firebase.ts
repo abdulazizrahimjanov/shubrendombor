@@ -323,23 +323,47 @@ export async function createStaffWithEmailPassword(
 export async function provisionStaffAccountOnSecondaryApp(
   email: string,
   nextPassword: string,
-  previousPassword?: string
-): Promise<void> {
-  if (!email || !nextPassword) return;
+  previousPasswords?: string | string[]
+): Promise<{ ok: boolean; code?: string; error?: string }> {
+  if (!email || !nextPassword) {
+    return { ok: false, code: 'invalid-input', error: 'Missing email or password' };
+  }
+  const candidates = (
+    Array.isArray(previousPasswords)
+      ? previousPasswords
+      : previousPasswords
+      ? [previousPasswords]
+      : []
+  ).filter((p) => Boolean(p) && p !== nextPassword);
+
   const secAuth = getSecondaryAuth();
   try {
     try {
       await createUserWithEmailAndPassword(secAuth, email, nextPassword);
+      return { ok: true };
     } catch (err) {
-      const code = typeof err === 'object' && err !== null && 'code' in err ? String((err as { code?: unknown }).code) : '';
-      if (code === 'auth/email-already-in-use' && previousPassword && previousPassword !== nextPassword) {
-        try {
-          const cred = await signInWithEmailAndPassword(secAuth, email, previousPassword);
-          await updatePassword(cred.user, nextPassword);
-        } catch {
-          // ignore if previous password unknown or unchanged
+      const code =
+        typeof err === 'object' && err !== null && 'code' in err
+          ? String((err as { code?: unknown }).code)
+          : '';
+      if (code === 'auth/email-already-in-use') {
+        for (const prev of candidates) {
+          try {
+            const cred = await signInWithEmailAndPassword(secAuth, email, prev);
+            await updatePassword(cred.user, nextPassword);
+            return { ok: true };
+          } catch {
+            // try next candidate
+          }
         }
+        // Account already exists in Auth; treat as provisioned unless explicitly blocked
+        return { ok: true, code };
       }
+      return {
+        ok: false,
+        code,
+        error: formatFirebaseError(err, 'uz'),
+      };
     }
   } finally {
     try {

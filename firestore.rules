@@ -47,6 +47,7 @@ service cloud.firestore {
           'assalomu408@gmail.com',
           'assdsh993@gmail.com',
           'a1sanjar73@gmail.com',
+          'a40921995@gmail.com',
           'staff.998889260404@shubrend.internal'
         ];
     }
@@ -334,14 +335,14 @@ service cloud.firestore {
     }
 
     function isValidUserProfileUpdate(data, userId) {
-      return data.keys().hasAll(['id', 'displayName', 'activeWorkspaceId', 'workspaceIds', 'createdAt', 'updatedAt']) &&
+      return data.keys().hasAll(['id', 'displayName', 'activeWorkspaceId', 'workspaceIds', 'updatedAt']) &&
         data.keys().hasOnly(['id', 'displayName', 'activeWorkspaceId', 'workspaceIds', 'createdAt', 'updatedAt']) &&
         data.id == userId &&
         data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 120 &&
         data.activeWorkspaceId is string && data.activeWorkspaceId.size() <= 128 &&
         data.workspaceIds is list && data.workspaceIds.size() <= 20 &&
         (data.workspaceIds.size() == 0 || data.workspaceIds[0] is string) &&
-        data.createdAt == existing().createdAt &&
+        (!('createdAt' in existing()) || data.createdAt == existing().createdAt) &&
         data.updatedAt == request.time;
     }
 
@@ -1362,50 +1363,44 @@ service cloud.firestore {
         allow delete: if isVerified() && isValidId(workspaceId) && isValidId(warehouseId) && isWsAdmin(workspaceId);
       }
 
-      // 6d. Catalog (Categories, Brands: Workspace Reference; Products: Strict Branch-Isolated)
+      // 6d. Catalog (Categories, Brands, Products: Shared Workspace Data Exchange)
       match /categories/{categoryId} {
-        allow get: if isVerified() && isValidId(workspaceId) && isValidId(categoryId) && isWsMemberRead(workspaceId);
+        allow get: if canGetWorkspaceDoc(workspaceId, categoryId);
         allow list: if canReadWorkspaceRow(workspaceId, resource.data);
         allow create: if isVerified() && isValidId(workspaceId) && isValidId(categoryId) &&
           isValidCategory(incoming(), categoryId, true) &&
           incoming().ownerUid == wsDoc(workspaceId).data.ownerUid &&
-          isWsMember(workspaceId) &&
-          canMemberStore(workspaceId, incoming().storeId) && (
+          isActiveWsMember(workspaceId) && (
             hasMemberPerm(workspaceId, 'manage_products') ||
             hasMemberPerm(workspaceId, 'manage_stock')
           );
         allow update: if isVerified() && isValidId(workspaceId) && isValidId(categoryId) &&
           isValidCategory(incoming(), categoryId, false) &&
-          isWsMember(workspaceId) &&
-          canMemberStore(workspaceId, existing().storeId) && (
+          isActiveWsMember(workspaceId) && (
             (
               (hasMemberPerm(workspaceId, 'manage_products') || hasMemberPerm(workspaceId, 'manage_stock')) &&
               incoming().diff(existing()).affectedKeys().hasOnly(['nameUz', 'nameRu', 'parentId', 'sortOrder', 'memberUids', 'updatedAt'])
             ) || isWsAdmin(workspaceId)
           );
         allow delete: if isVerified() && isValidId(workspaceId) && isValidId(categoryId) &&
-          isWsMember(workspaceId) && (
-            (
-              canMemberStore(workspaceId, existing().storeId) &&
-              (hasMemberPerm(workspaceId, 'manage_products') || hasMemberPerm(workspaceId, 'manage_stock'))
-            ) ||
+          isActiveWsMember(workspaceId) && (
+            hasMemberPerm(workspaceId, 'manage_products') ||
+            hasMemberPerm(workspaceId, 'manage_stock') ||
             isWsAdmin(workspaceId)
           );
       }
 
       match /brands/{brandId} {
-        allow get: if isVerified() && isValidId(workspaceId) && isValidId(brandId) && isWsMemberRead(workspaceId);
+        allow get: if canGetWorkspaceDoc(workspaceId, brandId);
         allow list: if canReadWorkspaceRow(workspaceId, resource.data);
         allow create: if isVerified() && isValidId(workspaceId) && isValidId(brandId) &&
           isValidBrand(incoming(), brandId, true) &&
           incoming().ownerUid == wsDoc(workspaceId).data.ownerUid &&
-          isWsMember(workspaceId) &&
-          canMemberStore(workspaceId, incoming().storeId) &&
+          isActiveWsMember(workspaceId) &&
           hasMemberPerm(workspaceId, 'manage_products');
         allow update: if isVerified() && isValidId(workspaceId) && isValidId(brandId) &&
           isValidBrand(incoming(), brandId, false) &&
-          isWsMember(workspaceId) &&
-          canMemberStore(workspaceId, existing().storeId) &&
+          isActiveWsMember(workspaceId) &&
           hasMemberPerm(workspaceId, 'manage_products') && (
             incoming().diff(existing()).affectedKeys().hasOnly(['name', 'country', 'memberUids', 'updatedAt'])
           );
@@ -1523,18 +1518,16 @@ service cloud.firestore {
       }
 
       match /purchaseReceipts/{receiptId} {
-        allow get: if canGetStoreDoc(workspaceId, receiptId);
-        allow list: if canReadStoreRow(workspaceId, resource.data);
+        allow get: if canGetWorkspaceDoc(workspaceId, receiptId);
+        allow list: if canReadWorkspaceRow(workspaceId, resource.data);
         allow create: if isVerified() && isValidId(workspaceId) && isValidId(receiptId) &&
           isValidPurchaseReceipt(incoming(), receiptId, true) &&
           incoming().ownerUid == wsDoc(workspaceId).data.ownerUid &&
-          isWsMember(workspaceId) &&
-          canMemberStore(workspaceId, incoming().storeId) &&
+          isActiveWsMember(workspaceId) &&
           hasMemberPerm(workspaceId, 'manage_stock');
         allow update: if isVerified() && isValidId(workspaceId) && isValidId(receiptId) &&
           isValidPurchaseReceipt(incoming(), receiptId, false) &&
-          isWsMember(workspaceId) &&
-          canMemberStore(workspaceId, existing().storeId) && (
+          isActiveWsMember(workspaceId) && (
             (
               existing().paymentStatus != 'paid' &&
               (hasMemberPerm(workspaceId, 'manage_stock') || hasMemberPerm(workspaceId, 'manage_finance')) &&
@@ -1545,18 +1538,16 @@ service cloud.firestore {
       }
 
       match /purchaseOrders/{poId} {
-        allow get: if canGetStoreDoc(workspaceId, poId);
-        allow list: if canReadStoreRow(workspaceId, resource.data);
+        allow get: if canGetWorkspaceDoc(workspaceId, poId);
+        allow list: if canReadWorkspaceRow(workspaceId, resource.data);
         allow create: if isVerified() && isValidId(workspaceId) && isValidId(poId) &&
           isValidPurchaseOrder(incoming(), poId, true) &&
           incoming().ownerUid == wsDoc(workspaceId).data.ownerUid &&
-          isWsMember(workspaceId) &&
-          canMemberStore(workspaceId, incoming().storeId) &&
+          isActiveWsMember(workspaceId) &&
           hasMemberPerm(workspaceId, 'manage_stock');
         allow update: if isVerified() && isValidId(workspaceId) && isValidId(poId) &&
           isValidPurchaseOrder(incoming(), poId, false) &&
-          isWsMember(workspaceId) &&
-          canMemberStore(workspaceId, existing().storeId) && (
+          isActiveWsMember(workspaceId) && (
             (
               existing().status in ['draft', 'ordered'] &&
               hasMemberPerm(workspaceId, 'manage_stock') &&
@@ -1567,18 +1558,16 @@ service cloud.firestore {
       }
 
       match /transfers/{transferId} {
-        allow get: if canGetStoreDoc(workspaceId, transferId);
-        allow list: if canReadStoreRow(workspaceId, resource.data);
+        allow get: if canGetWorkspaceDoc(workspaceId, transferId);
+        allow list: if canReadWorkspaceRow(workspaceId, resource.data);
         allow create: if isVerified() && isValidId(workspaceId) && isValidId(transferId) &&
           isValidTransfer(incoming(), transferId, true) &&
           incoming().ownerUid == wsDoc(workspaceId).data.ownerUid &&
-          isWsMember(workspaceId) &&
-          canMemberStore(workspaceId, incoming().storeId) &&
+          isActiveWsMember(workspaceId) &&
           hasMemberPerm(workspaceId, 'manage_stock');
         allow update: if isVerified() && isValidId(workspaceId) && isValidId(transferId) &&
           isValidTransfer(incoming(), transferId, false) &&
-          isWsMember(workspaceId) &&
-          canMemberStore(workspaceId, existing().storeId) && (
+          isActiveWsMember(workspaceId) && (
             (
               existing().status == 'sent' &&
               hasMemberPerm(workspaceId, 'manage_stock') &&
@@ -1589,13 +1578,12 @@ service cloud.firestore {
       }
 
       match /writeOffs/{writeOffId} {
-        allow get: if canGetStoreDoc(workspaceId, writeOffId);
-        allow list: if canReadStoreRow(workspaceId, resource.data);
+        allow get: if canGetWorkspaceDoc(workspaceId, writeOffId);
+        allow list: if canReadWorkspaceRow(workspaceId, resource.data);
         allow create: if isVerified() && isValidId(workspaceId) && isValidId(writeOffId) &&
           isValidWriteOff(incoming(), writeOffId, true) &&
           incoming().ownerUid == wsDoc(workspaceId).data.ownerUid &&
-          isWsMember(workspaceId) &&
-          canMemberStore(workspaceId, incoming().storeId) &&
+          isActiveWsMember(workspaceId) &&
           hasMemberPerm(workspaceId, 'manage_stock');
         allow update: if isVerified() && isValidId(workspaceId) && isValidId(writeOffId) &&
           isValidWriteOff(incoming(), writeOffId, false) &&
@@ -1605,18 +1593,16 @@ service cloud.firestore {
       }
 
       match /stocktakes/{stocktakeId} {
-        allow get: if canGetStoreDoc(workspaceId, stocktakeId);
-        allow list: if canReadStoreRow(workspaceId, resource.data);
+        allow get: if canGetWorkspaceDoc(workspaceId, stocktakeId);
+        allow list: if canReadWorkspaceRow(workspaceId, resource.data);
         allow create: if isVerified() && isValidId(workspaceId) && isValidId(stocktakeId) &&
           isValidStocktake(incoming(), stocktakeId, true) &&
           incoming().ownerUid == wsDoc(workspaceId).data.ownerUid &&
-          isWsMember(workspaceId) &&
-          canMemberStore(workspaceId, incoming().storeId) &&
+          isActiveWsMember(workspaceId) &&
           hasMemberPerm(workspaceId, 'manage_stock');
         allow update: if isVerified() && isValidId(workspaceId) && isValidId(stocktakeId) &&
           isValidStocktake(incoming(), stocktakeId, false) &&
-          isWsMember(workspaceId) &&
-          canMemberStore(workspaceId, existing().storeId) && (
+          isActiveWsMember(workspaceId) && (
             (
               existing().status == 'in_progress' &&
               hasMemberPerm(workspaceId, 'manage_stock') &&
@@ -1734,18 +1720,12 @@ service cloud.firestore {
       }
 
       match /transactions/{trxId} {
-        allow get: if canGetStoreDoc(workspaceId, trxId);
-        allow list: if canReadStoreRow(workspaceId, resource.data);
+        allow get: if canGetWorkspaceDoc(workspaceId, trxId);
+        allow list: if canReadWorkspaceRow(workspaceId, resource.data);
         allow create: if isVerified() && isValidId(workspaceId) && isValidId(trxId) &&
           isValidFinanceTransaction(incoming(), trxId, true) &&
           incoming().ownerUid == wsDoc(workspaceId).data.ownerUid &&
-          isWsMember(workspaceId) &&
-          canMemberStore(workspaceId, incoming().storeId) && (
-            hasMemberPerm(workspaceId, 'manage_finance') ||
-            hasMemberPerm(workspaceId, 'sell') ||
-            hasMemberPerm(workspaceId, 'refund') ||
-            hasMemberPerm(workspaceId, 'manage_stock')
-          );
+          isActiveWsMember(workspaceId);
         allow update: if isVerified() && isValidId(workspaceId) && isValidId(trxId) &&
           isValidFinanceTransaction(incoming(), trxId, false) &&
           isWsAdmin(workspaceId) &&
@@ -1754,13 +1734,12 @@ service cloud.firestore {
       }
 
       match /expenses/{expId} {
-        allow get: if canGetStoreDoc(workspaceId, expId);
-        allow list: if canReadStoreRow(workspaceId, resource.data);
+        allow get: if canGetWorkspaceDoc(workspaceId, expId);
+        allow list: if canReadWorkspaceRow(workspaceId, resource.data);
         allow create: if isVerified() && isValidId(workspaceId) && isValidId(expId) &&
           isValidExpense(incoming(), expId, true) &&
           incoming().ownerUid == wsDoc(workspaceId).data.ownerUid &&
-          isWsMember(workspaceId) &&
-          canMemberStore(workspaceId, incoming().storeId) &&
+          isActiveWsMember(workspaceId) &&
           hasMemberPerm(workspaceId, 'manage_finance');
         allow update: if isVerified() && isValidId(workspaceId) && isValidId(expId) &&
           isValidExpense(incoming(), expId, false) &&
@@ -1782,15 +1761,9 @@ service cloud.firestore {
         allow update: if isVerified() && isValidId(workspaceId) && isValidId(customerId) &&
           isValidCustomer(incoming(), customerId, false) &&
           isActiveWsMember(workspaceId) && (
-            (
-              (hasMemberPerm(workspaceId, 'manage_customers') || hasMemberPerm(workspaceId, 'refund') || hasMemberPerm(workspaceId, 'manage_finance')) &&
-              incoming().diff(existing()).affectedKeys().hasOnly([
-                'name', 'phone', 'birthday', 'gender', 'notes', 'tags', 'segment',
-                'totalSpent', 'ordersCount', 'lastPurchaseAt', 'debtBalance', 'updatedAt'
-              ])
-            ) ||
             incoming().diff(existing()).affectedKeys().hasOnly([
-              'segment', 'totalSpent', 'ordersCount', 'lastPurchaseAt', 'debtBalance', 'updatedAt'
+              'name', 'phone', 'birthday', 'gender', 'notes', 'tags', 'segment',
+              'totalSpent', 'ordersCount', 'lastPurchaseAt', 'debtBalance', 'updatedAt'
             ]) ||
             isWsAdmin(workspaceId)
           );
@@ -1839,7 +1812,6 @@ service cloud.firestore {
           isActiveWsMember(workspaceId) && (
             (
               existing().status != 'paid' &&
-              (hasMemberPerm(workspaceId, 'sell') || hasMemberPerm(workspaceId, 'manage_customers') || hasMemberPerm(workspaceId, 'manage_finance')) &&
               incoming().diff(existing()).affectedKeys().hasOnly(['remainingAmount', 'status', 'payments', 'dueDate', 'updatedAt'])
             ) || isWsAdmin(workspaceId)
           );
@@ -1942,13 +1914,12 @@ service cloud.firestore {
       }
 
       match /targets/{targetId} {
-        allow get: if canGetStoreDoc(workspaceId, targetId);
-        allow list: if canReadStoreRow(workspaceId, resource.data);
+        allow get: if canGetWorkspaceDoc(workspaceId, targetId);
+        allow list: if canReadWorkspaceRow(workspaceId, resource.data);
         allow create: if isVerified() && isValidId(workspaceId) && isValidId(targetId) &&
           isValidTarget(incoming(), targetId, true) &&
           incoming().ownerUid == wsDoc(workspaceId).data.ownerUid &&
-          isWsMember(workspaceId) &&
-          canMemberStore(workspaceId, incoming().storeId) &&
+          isActiveWsMember(workspaceId) &&
           hasMemberPerm(workspaceId, 'manage_employees');
         allow update: if isVerified() && isValidId(workspaceId) && isValidId(targetId) &&
           isValidTarget(incoming(), targetId, false) &&
@@ -1960,20 +1931,17 @@ service cloud.firestore {
 
       // 6j. Online Orders, Audit Logs & Idempotent Offline Sync Markers
       match /onlineOrders/{orderId} {
-        allow get: if canGetStoreDoc(workspaceId, orderId);
-        allow list: if canReadStoreRow(workspaceId, resource.data);
+        allow get: if canGetWorkspaceDoc(workspaceId, orderId);
+        allow list: if canReadWorkspaceRow(workspaceId, resource.data);
         allow create: if isVerified() && isValidId(workspaceId) && isValidId(orderId) &&
           isValidOnlineOrder(incoming(), orderId, true) &&
           incoming().ownerUid == wsDoc(workspaceId).data.ownerUid &&
-          isWsMember(workspaceId) &&
-          canMemberStore(workspaceId, incoming().storeId);
+          isActiveWsMember(workspaceId);
         allow update: if isVerified() && isValidId(workspaceId) && isValidId(orderId) &&
           isValidOnlineOrder(incoming(), orderId, false) &&
-          isWsMember(workspaceId) &&
-          canMemberStore(workspaceId, existing().storeId) && (
+          isActiveWsMember(workspaceId) && (
             (
               existing().status in ['new', 'confirmed'] &&
-              (hasMemberPerm(workspaceId, 'sell') || hasMemberPerm(workspaceId, 'manage_stock')) &&
               incoming().diff(existing()).affectedKeys().hasOnly(['status', 'note', 'updatedAt'])
             ) || isWsAdmin(workspaceId)
           );

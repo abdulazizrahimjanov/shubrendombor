@@ -187,7 +187,7 @@ export const EmployeesPage: React.FC = () => {
     } else if (preset === 'cashier') {
       setCustomPerms(['use_pos', 'view_catalog', 'process_returns', 'manage_shifts', 'view_customers', 'manage_customers']);
     } else if (preset === 'warehouse') {
-      setCustomPerms(['view_catalog', 'edit_catalog', 'view_inventory', 'manage_inventory', 'manage_online_orders']);
+      setCustomPerms(['use_pos', 'view_catalog', 'edit_catalog', 'view_inventory', 'manage_inventory', 'manage_online_orders']);
     } else {
       setCustomPerms([...ALL_PERMISSIONS]);
     }
@@ -805,7 +805,7 @@ export const EmployeesPage: React.FC = () => {
                     </button>
                     <button
                       type="button"
-                      onClick={() => setNewRolePerms(['view_catalog', 'edit_catalog', 'view_inventory', 'manage_inventory', 'manage_online_orders'])}
+                      onClick={() => setNewRolePerms(['use_pos', 'view_catalog', 'edit_catalog', 'view_inventory', 'manage_inventory', 'manage_online_orders'])}
                       className="px-2 py-1 rounded-md border border-slate-200 dark:border-slate-700 text-[11px]"
                     >
                       Omborchi
